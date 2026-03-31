@@ -1,0 +1,9 @@
+[package]
+name = "rustguard-core"
+version = "0.1.0"
+edition = "2021"
+description = "ASCON-128 AEAD Memory-Safe Core"
+
+[dependencies]
+subtle = { version = "2.5.0", default-features = false }
+zeroize = { version = "1.7.0", default-features = false, features = ["derive"] }

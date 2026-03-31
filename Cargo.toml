@@ -1,0 +1,7 @@
+[workspace]
+members = [
+    "rustguard-core",
+    "rustguard-pap",
+    "rustguard-hal",
+]
+resolver = "2"

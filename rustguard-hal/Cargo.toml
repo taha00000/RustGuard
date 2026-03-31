@@ -1,0 +1,12 @@
+[package]
+name = "rustguard-hal"
+version = "0.1.0"
+edition = "2021"
+description = "RustGuard Firmware implementation for Cortex-M"
+
+[dependencies]
+rustguard-pap = { path = "../rustguard-pap" }
+cortex-m = "0.7.7"
+cortex-m-rt = "0.7.3"
+stm32l4xx-hal = { version = "0.7.1", features = ["stm32l476", "rt"] }
+panic-halt = "0.2.0"

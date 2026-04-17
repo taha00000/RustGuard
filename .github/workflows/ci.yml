@@ -1,0 +1,108 @@
+name: CI
+
+on:
+  push:
+    branches: [ "main", "develop" ]
+  pull_request:
+    branches: [ "main" ]
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: 1
+
+jobs:
+  # ── Core library tests ─────────────────────────────────────────────────────
+  test:
+    name: Test Suite (stable)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust stable
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+
+      - name: Cache Cargo registry
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target/
+          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+
+      - name: Build (debug)
+        run: cargo build --workspace
+
+      - name: Build (release, LTO)
+        run: cargo build --workspace --release
+
+      - name: Run all tests (debug)
+        run: cargo test --workspace
+
+      - name: Run all tests (release)
+        run: cargo test --workspace --release
+
+      - name: Verify no unsafe code
+        run: |
+          # forbid(unsafe_code) is enforced at compile time.
+          # This step documents that guarantee in CI.
+          echo "unsafe_code forbidden by #![forbid(unsafe_code)] in source"
+          grep -r "forbid(unsafe_code)" rustguard-core/src/ rustguard-pap/src/
+          echo "All crates verified: zero unsafe blocks permitted."
+
+  # ── Clippy lints ───────────────────────────────────────────────────────────
+  clippy:
+    name: Clippy
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+      - run: cargo clippy --workspace --all-targets -- -D warnings
+
+  # ── Format check ──────────────────────────────────────────────────────────
+  fmt:
+    name: Rustfmt
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt
+      - run: cargo fmt --all -- --check
+
+  # ── Cross-compilation check (ARM Cortex-M4) ───────────────────────────────
+  cross-check:
+    name: Cross-compile check (thumbv7em-none-eabihf)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: thumbv7em-none-eabihf
+      - name: Check rustguard-core for embedded target
+        run: cargo check -p rustguard-core --target thumbv7em-none-eabihf
+      - name: Check rustguard-pap for embedded target
+        run: cargo check -p rustguard-pap --target thumbv7em-none-eabihf
+
+  # ── Binary size report ────────────────────────────────────────────────────
+  size-report:
+    name: Binary Size Report
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Build release
+        run: cargo build --workspace --release
+      - name: Report text segment size
+        run: |
+          echo "=== rustguard-core text segment ==="
+          nm --print-size --size-sort -t d \
+            target/release/deps/librustguard_core-*.rlib 2>/dev/null \
+            | awk '$3=="T"||$3=="t" {sum+=$2} END {printf "Text: %d bytes (%.2f KB)\n", sum, sum/1024}'
+          echo "=== Full rlib sizes ==="
+          ls -lh target/release/deps/librustguard_*.rlib 2>/dev/null || \
+          find target/release -name "librustguard_*.rlib" -exec ls -lh {} \;

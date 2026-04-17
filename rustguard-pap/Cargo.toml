@@ -6,4 +6,7 @@ description = "RustGuard Packet Authentication Protocol"
 
 [dependencies]
 rustguard-core = { path = "../rustguard-core" }
-heapless = { version = "0.8.0", default-features = false }
+heapless        = { version = "0.8.0", default-features = false }
+
+[dev-dependencies]
+rustguard-core = { path = "../rustguard-core" }

@@ -1,0 +1,14 @@
+# RustGuard TM4C123GH6PM Hardware Benchmark Results
+# MCU: TM4C123GH6PM (ARM Cortex-M4F @ 80 MHz)
+# Flash: 256 KB  |  SRAM: 32 KB
+# Rust 1.75.0, opt-level=3, lto=true, codegen-units=1
+# Iterations: 500  Warmup: 50
+# 1 cycle = 12.5 ns at 80 MHz
+#
+# HOW TO POPULATE:
+#   1. cargo build --release --target thumbv7em-none-eabihf
+#      (from rustguard-hal-tiva/ directory)
+#   2. Flash firmware onto TM4C123 LaunchPad
+#   3. Open serial monitor at 115200 baud
+#   4. Copy output to this file
+#   5. Run: python3 scripts/parse_hw_results.py results/raw/benchmark_tm4c_TEMPLATE.txt

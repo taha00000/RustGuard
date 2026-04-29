@@ -1,0 +1,32 @@
+[package]
+name        = "rustguard-hal-tiva"
+version     = "0.1.0"
+edition     = "2021"
+description = "RustGuard benchmark firmware for TM4C123GH6PM (Tiva C LaunchPad, Cortex-M4F @ 80 MHz)"
+
+# Build separately — NOT part of the workspace (embedded-only target):
+#   cargo build --release --target thumbv7em-none-eabihf
+# Flash with:
+#   openocd -f interface/ti-icdi.cfg -f target/tm4c123g.cfg \
+#           -c "program target/thumbv7em-none-eabihf/release/rustguard-hal-tiva verify reset exit"
+
+[[bin]]
+name = "rustguard-hal-tiva"
+path = "src/main.rs"
+
+[dependencies]
+rustguard-core = { path = "../rustguard-core" }
+rustguard-pap  = { path = "../rustguard-pap"  }
+
+# TI Tiva C HAL crate
+tm4c123x-hal   = { version = "0.7.0" }
+tm4c123x       = { version = "0.6.0", features = ["rt"] }
+cortex-m       = { version = "0.7.7" }
+cortex-m-rt    = { version = "0.7.3" }
+panic-halt     = { version = "0.2.0" }
+
+[profile.release]
+opt-level     = 3
+lto           = true
+codegen-units = 1
+debug         = true    # keep debug info for OpenOCD symbol loading

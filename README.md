@@ -103,7 +103,7 @@ rustguard/
 ### Build
 
 ```bash
-git clone https://github.com/ta08451/rustguard.git
+git clone https://github.com/taha00000/RustGuard.git
 cd rustguard
 cargo build --release
 ```

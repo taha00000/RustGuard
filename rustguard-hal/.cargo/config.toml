@@ -1,5 +1,0 @@
-[target.thumbv7em-none-eabihf]
-runner = "probe-rs run --chip STM32L476RG"
-
-[build]
-target = "thumbv7em-none-eabihf"

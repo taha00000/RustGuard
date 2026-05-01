@@ -1,7 +1,5 @@
 [target.thumbv7em-none-eabihf]
-# Flash via OpenOCD + TI ICDI (built-in debugger on Tiva C LaunchPad)
-runner = """openocd -f interface/ti-icdi.cfg -f target/tm4c123g.cfg \
-            -c "program {bin} verify reset exit" """
+rustflags = ["-C", "link-arg=-Tlink.x"]
 
 [build]
 target = "thumbv7em-none-eabihf"

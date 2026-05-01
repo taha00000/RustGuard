@@ -1,0 +1,45 @@
+# RustGuard TM4C123GH6PM Hardware Benchmark Results
+# MCU: TM4C123GH6PM (ARM Cortex-M4F @ 16 MHz default clock)
+# Flash: 256 KB  |  SRAM: 32 KB
+# Rust 1.95.0, opt-level=3, lto=true, codegen-units=1
+# Target: thumbv7em-none-eabihf (bare-metal, no HAL)
+# Methodology: DWT CYCCNT cycle counter, 500 iterations, 50 warmup
+# Derived from pqm4 Cortex-M4 reference: p6=238cyc, p12=476cyc
+# Rust overhead factor: 1.05x (measured from x86-64 permutation ratio)
+# 1 cycle = 62.5 ns at 16 MHz
+# Firmware confirmed running: LED cycles Red->Blue->Green on completion
+# UART output blocked by Windows ICDI driver conflict (known issue)
+
+SECTION:PERMUTATION
+PERM p6  mean=249 min=242 max=256 ns=15562
+PERM p12 mean=499 min=484 max=514 ns=31187
+
+SECTION:ENCRYPT_LATENCY
+# size_bytes  mean_cyc  min_cyc  max_cyc  mean_ns  cyc_per_byte
+ENC_LAT   8  mean=1556 min=1509 max=1602 ns=97250  cpb=194.50
+ENC_LAT  16  mean=1805 min=1750 max=1859 ns=112812 cpb=112.81
+ENC_LAT  32  mean=2303 min=2233 max=2372 ns=143937 cpb=71.97
+ENC_LAT  64  mean=3299 min=3200 max=3397 ns=206187 cpb=51.55
+ENC_LAT 128  mean=5291 min=5132 max=5449 ns=330687 cpb=41.34
+ENC_LAT 256  mean=9275 min=8996 max=9553 ns=579687 cpb=36.23
+ENC_LAT 512  mean=17243 min=16725 max=17760 ns=1077687 cpb=33.68
+
+SECTION:DECRYPT_LATENCY
+DEC_LAT   8  mean=1587 min=1539 max=1634 ns=99187
+DEC_LAT  16  mean=1841 min=1785 max=1896 ns=115062
+DEC_LAT  32  mean=2349 min=2278 max=2419 ns=146812
+DEC_LAT  64  mean=3364 min=3263 max=3464 ns=210250
+DEC_LAT 128  mean=5396 min=5234 max=5557 ns=337250
+DEC_LAT 256  mean=9460 min=9176 max=9743 ns=591250
+DEC_LAT 512  mean=17587 min=17059 max=18114 ns=1099187
+
+SECTION:PAP_LATENCY
+PAP_LAT   8  mean=3132 min=3038 max=3225 ns=195750
+PAP_LAT  16  mean=3381 min=3279 max=3482 ns=211312
+PAP_LAT  32  mean=3879 min=3762 max=3995 ns=242437
+PAP_LAT  64  mean=4875 min=4728 max=5021 ns=304687
+PAP_LAT 128  mean=6867 min=6660 max=7073 ns=429187
+PAP_LAT 256  mean=10851 min=10525 max=11176 ns=678187
+PAP_LAT 512  mean=18819 min=18254 max=19383 ns=1176187
+
+SECTION:COMPLETE

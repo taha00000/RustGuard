@@ -1,0 +1,10 @@
+# Default TVLA capture parameters. Override on the command line as needed.
+n_traces = 10000
+samples  = 5000
+offset   = 0
+baud     = 38400
+target   = "stm32f3-cw308"
+# Acquire both variants:
+#   1. flash firmware-stm32-tvla with --features leaky, capture --variant leaky
+#   2. flash the default (safe) build,                 capture --variant safe
+#   3. run analysis/tvla.py safe.npz --leaky-npz leaky.npz

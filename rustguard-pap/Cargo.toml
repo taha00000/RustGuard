@@ -1,12 +1,11 @@
 [package]
 name = "rustguard-pap"
-version = "0.1.0"
-edition = "2021"
-description = "RustGuard Packet Authentication Protocol"
+version = "0.2.0"
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "RustGuard Packet Authentication Protocol with reboot-robust nonces."
 
 [dependencies]
 rustguard-core = { path = "../rustguard-core" }
-heapless        = { version = "0.8.0", default-features = false }
-
-[dev-dependencies]
-rustguard-core = { path = "../rustguard-core" }
+heapless = "0.8"

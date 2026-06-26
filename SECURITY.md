@@ -4,7 +4,7 @@
 
 | Version | Supported |
 |---|---|
-| 0.1.x | ✓ |
+| 0.2.x | ✓ |
 
 ## Reporting a Vulnerability
 
@@ -22,14 +22,22 @@ within 14 days for critical issues.
 
 ## Scope
 
-This library implements ASCON-128 as specified in NIST IR 8454. Reported
-vulnerabilities may relate to:
+RustGuard implements ASCON-128 (NIST IR 8454) as the device under test for a
+study of constant-time behavior on embedded silicon. Reported vulnerabilities
+may relate to:
 
-- Incorrect implementation of the ASCON specification
-- Timing side-channel leakage in the Rust source
-- Memory unsafety (note: `#![forbid(unsafe_code)]` is enforced at compile time)
-- Nonce-reuse vulnerabilities in the PAP protocol design
+- Incorrect implementation of the ASCON specification (the KATs in
+  `rustguard-core/tests/kat.rs` are the reference oracle)
+- Timing or power side-channel leakage that survives compilation to hardware
+- Memory unsafety (note: `#![forbid(unsafe_code)]` is enforced on the crypto
+  crates; the only `unsafe` is isolated MMIO in the firmware crates)
+- Nonce-reuse vulnerabilities in the PAP protocol design (see
+  `docs/protocol_security.md`)
 - Authentication bypass in the tag comparison logic
+
+Note: the `tvla-leaky-control` feature compiles a deliberately variable-time tag
+check. It is a research positive control and is **not** a vulnerability — it must
+never be enabled in a production build.
 
 Out of scope: vulnerabilities in upstream dependencies (`subtle`, `zeroize`,
 `heapless`). Please report those to the respective crate maintainers.

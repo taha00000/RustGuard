@@ -1,0 +1,3 @@
+chipwhisperer>=5.7
+numpy>=1.24
+matplotlib>=3.7

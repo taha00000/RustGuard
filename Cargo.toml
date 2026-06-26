@@ -1,17 +1,14 @@
 [workspace]
-members = [
-    "rustguard-core",
-    "rustguard-pap",
-]
 resolver = "2"
+members = ["rustguard-core", "rustguard-pap"]
+# Firmware crates build for embedded targets and are excluded from the host
+# workspace (they need thumbv7em-none-eabihf / their own .cargo/config).
+# They must be listed in `exclude`, otherwise cargo auto-claims them as
+# workspace members (they live under the workspace root) and refuses to build
+# them standalone with their own target config.
+exclude = ["firmware-tm4c", "firmware-stm32-tvla"]
 
-[profile.release]
-opt-level     = 3
-lto           = true
-codegen-units = 1
-strip         = "symbols"
-
-[profile.bench]
-opt-level     = 3
-lto           = true
-codegen-units = 1
+[workspace.package]
+edition = "2021"
+license = "MIT"
+repository = "https://github.com/taha00000/RustGuard"

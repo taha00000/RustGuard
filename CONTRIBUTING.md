@@ -1,49 +1,57 @@
 # Contributing to RustGuard
 
-Thank you for your interest in contributing!
+RustGuard is a research repository. The cipher is the device under test for a
+study of whether Rust's source-level constant-time guarantees survive
+compilation to embedded silicon, and what memory safety costs in cycles versus
+C/asm. Contributions should preserve that measurement integrity.
 
-## Requirements for all contributions
+## Hard rules
 
-1. **No unsafe code.** `#![forbid(unsafe_code)]` is enforced on all crates.
-   PRs that introduce `unsafe` blocks will not be merged.
+1. **No unsafe in the crypto crates.** `#![forbid(unsafe_code)]` is enforced on
+   `rustguard-core` and `rustguard-pap`. The only permitted `unsafe` is isolated
+   MMIO in the firmware crates.
 
-2. **No heap allocation.** All buffers must use `heapless` or fixed-size
-   arrays. No `Vec`, `Box`, or `String` from `std`.
+2. **No heap allocation.** Buffers use `heapless` or fixed-size arrays — no
+   `Vec`, `Box`, or `String` from `std`.
 
-3. **Tests required.** Any new functionality must be accompanied by tests.
-   Run `cargo test --workspace` before submitting.
+3. **Never weaken the KATs.** `rustguard-core/tests/kat.rs` checks the cipher
+   against the published ASCON reference. If a change makes a KAT fail, the
+   change is wrong — do not edit the vectors to make it pass.
 
-4. **Clippy clean.** Run `cargo clippy --workspace --all-targets -- -D warnings`
-   and resolve all warnings.
+4. **Never enable `tvla-leaky-control` by default.** It is a deliberately
+   variable-time positive control for the side-channel experiment. It stays
+   gated behind the feature flag.
 
-5. **Formatted.** Run `cargo fmt --all` before committing.
+5. **No fabricated results.** Do not commit synthetic traces, cycle counts, or
+   t-statistics presented as measured. Measured data comes from the bench only.
+   This is the failure mode the project was redirected to avoid.
 
-## Development workflow
+## Host checks before submitting
 
-```bash
-# Clone
-git clone https://github.com/taha00000/RustGuard.git
-cd rustguard
-
-# Test
-cargo test --workspace
-
-# Lint
-cargo clippy --workspace --all-targets -- -D warnings
-
-# Format
+```sh
+cargo test -p rustguard-core -p rustguard-pap        # correctness + protocol
+cargo build -p rustguard-core --features tvla-leaky-control
 cargo fmt --all
+cargo clippy -p rustguard-core -p rustguard-pap --all-targets -- -D warnings
+```
 
-# Check embedded cross-compilation
+## Firmware cross-compilation
+
+The firmware crates are excluded from the host workspace and build for
+`thumbv7em-none-eabihf` with their own `.cargo/config.toml`:
+
+```sh
 rustup target add thumbv7em-none-eabihf
-cargo check -p rustguard-core --target thumbv7em-none-eabihf
-cargo check -p rustguard-pap  --target thumbv7em-none-eabihf
+cd firmware-tm4c        && cargo check --release
+cd firmware-stm32-tvla  && cargo check --release && cargo check --release --features leaky
 ```
 
 ## Areas open for contribution
 
-- ARM Cortex-M4 hardware benchmarks (requires STM32L476 or nRF52840)
-- ChipWhisperer TVLA side-channel evaluation
-- ASCON-80pq variant implementation
+- Additional ASCON KAT vectors and differential test harnesses
+- pqm4 / ascon-c baseline integration (`baseline-c/`)
+- ChipWhisperer TVLA tooling and additional optimization-level sweeps
 - Boolean masking for second-order DPA resistance
-- Additional target HAL integrations (nRF52840, ESP32-S3)
+- Additional embedded targets for the same-board comparison
+
+See `docs/CLAUDE_CODE_HANDOFF.md` for current project state and the task list.

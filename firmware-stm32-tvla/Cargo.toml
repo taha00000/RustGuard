@@ -1,0 +1,20 @@
+[package]
+name = "firmware-stm32-tvla"
+version = "0.2.0"
+edition = "2021"
+
+[dependencies]
+rustguard-core = { path = "../rustguard-core", features = [] }
+cortex-m = "0.7"
+cortex-m-rt = "0.7"
+panic-halt = "0.2"
+
+[features]
+# Links the variable-time tag check as the TVLA positive control.
+leaky = ["rustguard-core/tvla-leaky-control"]
+
+[profile.release]
+opt-level = 3
+lto = true
+codegen-units = 1
+debug = true

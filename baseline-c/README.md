@@ -17,14 +17,14 @@ repo stays clean and licensing stays with upstream.
 The Reframe-1 claim is about the *cost of memory safety* and *whether constant-
 time survives compilation*. Both require a same-board, same-toolchain baseline:
 - Performance: Rust cyc/B vs C cyc/B vs asm cyc/B on the TM4C.
-- Side-channel: Rust ct_eq vs C constant-time-compare under identical TVLA.
+- Timing: Rust `ct_eq` vs the C constant-time compare under identical dudect
+  (DWT cycle-count) measurement on the TM4C.
 
 ## Setup
 
 ```sh
 ./setup.sh          # clones ascon-c and pqm4 as submodules
 make tm4c-bench     # builds the C baseline benchmark firmware for the TM4C
-make stm32-tvla     # builds the C TVLA target for the CW308/STM32F3
 ```
 
 > TODO(hardware): `setup.sh` and the Makefiles assume the arm-none-eabi-gcc

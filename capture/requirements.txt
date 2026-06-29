@@ -1,3 +1,4 @@
-chipwhisperer>=5.7
+# Timing-sample collection from the TM4C over UART. No oscilloscope/ChipWhisperer
+# stack required — the instrument is the board's own DWT cycle counter.
+pyserial>=3.5
 numpy>=1.24
-matplotlib>=3.7

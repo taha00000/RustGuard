@@ -19,14 +19,12 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
         with:
           targets: thumbv7em-none-eabihf
-      - name: cargo check firmware (TM4C)
+      - name: cargo check firmware (TM4C: perf, timing harness, timing+leaky)
         working-directory: firmware-tm4c
-        run: cargo check --release
-      - name: cargo check firmware (STM32 TVLA, safe + leaky)
-        working-directory: firmware-stm32-tvla
         run: |
           cargo check --release
-          cargo check --release --features leaky
+          cargo check --release --features timing
+          cargo check --release --features "timing leaky"
 
   analysis:
     runs-on: ubuntu-latest
@@ -37,7 +35,7 @@ jobs:
           python-version: "3.12"
       - name: Install analysis deps
         run: pip install -r analysis/requirements.txt
-      - name: Unit tests (TVLA t-test, perf parser)
+      - name: Unit tests (timing-leakage t-test, perf parser)
         run: python -m pytest analysis/tests -q
       - name: Pipeline self-test (synthetic, end-to-end)
         run: python analysis/selftest.py

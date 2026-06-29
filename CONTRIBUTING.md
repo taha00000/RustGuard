@@ -42,16 +42,18 @@ The firmware crates are excluded from the host workspace and build for
 
 ```sh
 rustup target add thumbv7em-none-eabihf
-cd firmware-tm4c        && cargo check --release
-cd firmware-stm32-tvla  && cargo check --release && cargo check --release --features leaky
+cd firmware-tm4c && cargo check --release                       # perf
+cd firmware-tm4c && cargo check --release --features timing     # timing harness
+cd firmware-tm4c && cargo check --release --features "timing leaky"
 ```
 
 ## Areas open for contribution
 
 - Additional ASCON KAT vectors and differential test harnesses
 - pqm4 / ascon-c baseline integration (`baseline-c/`)
-- ChipWhisperer TVLA tooling and additional optimization-level sweeps
-- Boolean masking for second-order DPA resistance
-- Additional embedded targets for the same-board comparison
+- Optimization-level sweeps and additional timing-leakage experiments
+- Porting the timing harness to other Cortex-M4 boards (only UART is board-specific)
+- Boolean masking for second-order resistance
+- (future, needs a capture rig) power/EM side-channel analysis
 
 See `docs/CLAUDE_CODE_HANDOFF.md` for current project state and the task list.

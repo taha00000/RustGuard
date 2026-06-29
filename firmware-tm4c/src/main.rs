@@ -1,16 +1,27 @@
-//! TM4C123GH6PM performance benchmark firmware.
+//! TM4C123GH6PM firmware — two modes, selected at build time.
 //!
-//! Measures real ASCON-128 cycle counts via the DWT CYCCNT counter and streams
-//! results over UART0. This is the *performance* half of the study; the
-//! side-channel (TVLA) half runs on the STM32F3 target in `firmware-stm32-tvla`.
+//!  * default build           : performance benchmark. Streams real ASCON-128
+//!                              cycle counts (DWT CYCCNT) over UART0.
+//!  * `--features timing`      : dudect-style timing-leakage harness. The host
+//!                              drives fixed-vs-random inputs; the firmware
+//!                              measures the cycle count of each crypto op with
+//!                              interrupts disabled and returns it. No external
+//!                              capture hardware is needed — the ARM core's own
+//!                              cycle counter is the instrument.
+//!  * `--features "timing leaky"` : as above, but the decrypt path links the
+//!                              variable-time tag compare — the known-leaking
+//!                              positive control that validates the method.
 //!
-//! ## UART capture (important — read before flashing)
+//! Timing-leakage detection on-chip follows Reparaz, Balasch & Verbauwhede,
+//! "Dude, is my code constant time?" (DATE 2017): collect execution-time samples
+//! for two input classes and apply Welch's t-test (analysis/dudect.py). If the
+//! constant-time guarantee holds through compilation, the two classes are
+//! statistically indistinguishable (|t| < 4.5); the leaky control separates them.
 //!
-//! The previous iteration could not capture UART because of a Windows ICDI
-//! virtual-COM driver conflict. The fix is to NOT rely on the ICDI COM port:
-//! wire an external USB-UART dongle (FT232/CP2102) to PA1 (TX) -> dongle RX and
-//! GND -> GND, and read it from the host at 115200 8N1. This bypasses the ICDI
-//! driver entirely. See docs/hardware_setup.md.
+//! ## UART capture (read before flashing)
+//! Do NOT rely on the ICDI virtual-COM port (the Windows driver conflict that
+//! blocked the previous attempt). Wire an external USB-UART dongle (FT232/CP2102)
+//! to PA1 (TX) -> dongle RX, GND -> GND, 115200 8N1. See docs/hardware_setup.md.
 
 #![no_std]
 #![no_main]
@@ -19,7 +30,6 @@ use core::fmt::Write;
 use cortex_m::peripheral::DWT;
 use cortex_m_rt::entry;
 use panic_halt as _;
-use rustguard_core::{ascon_aead_decrypt, ascon_aead_encrypt, ascon_p, State};
 
 // ── Register addresses (TM4C123, direct access; no HAL) ──────────────────────
 const SYSCTL_RCGCGPIO: u32 = 0x400F_E608;
@@ -35,9 +45,7 @@ const UART0_CC: u32 = 0x4000_CFC8;
 
 #[inline(always)]
 fn rd(addr: u32) -> u32 {
-    // SAFETY-FREE: volatile MMIO via cortex-m's provided helpers would need
-    // `unsafe`; this firmware crate intentionally allows unsafe ONLY for MMIO,
-    // isolated here. The cryptographic crates remain forbid(unsafe_code).
+    // Isolated `unsafe` for MMIO only; the crypto crates stay forbid(unsafe_code).
     unsafe { core::ptr::read_volatile(addr as *const u32) }
 }
 #[inline(always)]
@@ -51,7 +59,7 @@ fn uart_init() {
     for _ in 0..10_000 {
         let _ = rd(SYSCTL_RCGCGPIO);
     }
-    // PA0/PA1 alternate function = UART
+    // PA0 (RX) / PA1 (TX) alternate function = UART0
     wr(GPIOA_BASE + 0x420, 0x3); // AFSEL PA0,PA1
     wr(GPIOA_BASE + 0x52C, 0x11); // PCTL AF1
     wr(GPIOA_BASE + 0x51C, 0x3); // DEN PA0,PA1
@@ -75,13 +83,6 @@ impl Write for Uart {
     }
 }
 
-const KEY: [u8; 16] = [0x42; 16];
-const NONCE: [u8; 16] = [0xAA; 16];
-const AD: [u8; 8] = [0xAD; 8];
-const SIZES: [usize; 7] = [8, 16, 32, 64, 128, 256, 512];
-const WARMUP: u32 = 50;
-const ITERS: u32 = 500;
-
 #[inline(always)]
 fn cyccnt() -> u32 {
     DWT::cycle_count()
@@ -89,7 +90,7 @@ fn cyccnt() -> u32 {
 
 #[entry]
 fn main() -> ! {
-    // Enable DWT cycle counter.
+    // Enable the DWT cycle counter (the measurement instrument for both modes).
     let mut core = cortex_m::Peripherals::take().unwrap();
     core.DCB.enable_trace();
     core.DWT.enable_cycle_counter();
@@ -97,10 +98,26 @@ fn main() -> ! {
     uart_init();
     let mut u = Uart;
 
+    run(&mut u)
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Mode A: performance benchmark (default build)
+// ─────────────────────────────────────────────────────────────────────────────
+#[cfg(not(feature = "timing"))]
+fn run(u: &mut Uart) -> ! {
+    use rustguard_core::{ascon_aead_decrypt, ascon_aead_encrypt, ascon_p, State};
+
+    const KEY: [u8; 16] = [0x42; 16];
+    const NONCE: [u8; 16] = [0xAA; 16];
+    const AD: [u8; 8] = [0xAD; 8];
+    const SIZES: [usize; 7] = [8, 16, 32, 64, 128, 256, 512];
+    const WARMUP: u32 = 50;
+    const ITERS: u32 = 500;
+
     let _ = writeln!(u, "# RustGuard TM4C123 perf benchmark (real DWT)");
     let _ = writeln!(u, "# 16 MHz, opt-level=3, lto=true. {} iters, {} warmup", ITERS, WARMUP);
 
-    // Permutation micro-benchmarks.
     for (label, rounds) in [("p6", 6usize), ("p12", 12usize)] {
         let mut st = State { x0: 1, x1: 2, x2: 3, x3: 4, x4: 5 };
         for _ in 0..WARMUP {
@@ -138,7 +155,6 @@ fn main() -> ! {
 
     let _ = writeln!(u, "SECTION:DECRYPT");
     for &sz in &SIZES {
-        // produce a valid ct/tag for this size first
         ascon_aead_encrypt(&KEY, &NONCE, &AD, &pt[..sz], &mut ct[..sz], &mut tag);
         for _ in 0..WARMUP {
             let _ = ascon_aead_decrypt(&KEY, &NONCE, &AD, &ct[..sz], &mut rec[..sz], &tag);
@@ -154,5 +170,125 @@ fn main() -> ! {
     let _ = writeln!(u, "SECTION:DONE");
     loop {
         cortex_m::asm::wfi();
+    }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Mode B: dudect-style timing-leakage harness (`--features timing`)
+// ─────────────────────────────────────────────────────────────────────────────
+#[cfg(feature = "timing")]
+fn run(u: &mut Uart) -> ! {
+    use core::hint::black_box;
+    use rustguard_core::ascon_aead_encrypt;
+    #[cfg(not(feature = "leaky"))]
+    use rustguard_core::ascon_aead_decrypt as aead_decrypt;
+    #[cfg(feature = "leaky")]
+    use rustguard_core::ascon_aead_decrypt_variabletime as aead_decrypt;
+
+    const NONCE: [u8; 16] = [0x00; 16];
+    const AD: [u8; 0] = [];
+    const FIXED_PT: [u8; 16] = [0x00; 16];
+
+    fn hexval(c: u8) -> u8 {
+        match c {
+            b'0'..=b'9' => c - b'0',
+            b'a'..=b'f' => c - b'a' + 10,
+            b'A'..=b'F' => c - b'A' + 10,
+            _ => 0,
+        }
+    }
+    fn getc() -> u8 {
+        while rd(UART0_FR) & (1 << 4) != 0 {} // RXFE (receive FIFO empty)
+        rd(UART0_DR) as u8
+    }
+    fn read_hex_16() -> [u8; 16] {
+        let mut out = [0u8; 16];
+        for byte in out.iter_mut() {
+            let hi = hexval(getc());
+            let lo = hexval(getc());
+            *byte = (hi << 4) | lo;
+        }
+        out
+    }
+    fn send_hex(u: &mut Uart, bytes: &[u8]) {
+        const LUT: &[u8; 16] = b"0123456789abcdef";
+        for &b in bytes {
+            let _ = u.write_str(unsafe {
+                core::str::from_utf8_unchecked(&[LUT[(b >> 4) as usize]])
+            });
+            let _ = u.write_str(unsafe {
+                core::str::from_utf8_unchecked(&[LUT[(b & 0xf) as usize]])
+            });
+        }
+    }
+
+    // Encrypt timing: vary the key (or plaintext) class; constant-time => no leak.
+    fn measure_encrypt(key: &[u8; 16], pt: &[u8; 16]) -> u32 {
+        let mut ct = [0u8; 16];
+        let mut tag = [0u8; 16];
+        cortex_m::interrupt::free(|_| {
+            let s = cyccnt();
+            ascon_aead_encrypt(black_box(key), &NONCE, &AD, black_box(&pt[..]), &mut ct, &mut tag);
+            let e = cyccnt();
+            let _ = black_box(&ct);
+            let _ = black_box(&tag);
+            e.wrapping_sub(s)
+        })
+    }
+
+    // Decrypt timing: the tag-compare experiment. Recompute a valid ct from the
+    // key, then time aead_decrypt against the host-supplied tag. Constant-time
+    // compare => identical timing for matching vs mismatching tags; the leaky
+    // control returns early on first mismatch => the random-tag class is faster.
+    fn measure_decrypt(key: &[u8; 16], tag: &[u8; 16]) -> u32 {
+        let mut ct = [0u8; 16];
+        let mut real_tag = [0u8; 16];
+        ascon_aead_encrypt(key, &NONCE, &AD, &FIXED_PT, &mut ct, &mut real_tag);
+        let mut rec = [0u8; 16];
+        cortex_m::interrupt::free(|_| {
+            let s = cyccnt();
+            let ok = aead_decrypt(black_box(key), &NONCE, &AD, black_box(&ct[..]), &mut rec, black_box(tag));
+            let e = cyccnt();
+            let _ = black_box(&rec);
+            let _ = black_box(ok);
+            e.wrapping_sub(s)
+        })
+    }
+
+    fn correct_tag(key: &[u8; 16]) -> [u8; 16] {
+        let mut ct = [0u8; 16];
+        let mut tag = [0u8; 16];
+        ascon_aead_encrypt(key, &NONCE, &AD, &FIXED_PT, &mut ct, &mut tag);
+        tag
+    }
+
+    let variant = if cfg!(feature = "leaky") { "leaky" } else { "safe" };
+    let _ = writeln!(u, "# RustGuard TM4C123 timing harness ({})", variant);
+    let _ = writeln!(u, "# cmds: e=enc-timing v=dec-timing g=get-tag. reply 'cyc <n>'");
+    let _ = writeln!(u, "READY");
+
+    loop {
+        match getc() {
+            b'e' => {
+                let key = read_hex_16();
+                let pt = read_hex_16();
+                let c = measure_encrypt(&key, &pt);
+                let _ = writeln!(u, "cyc {}", c);
+            }
+            b'v' => {
+                let key = read_hex_16();
+                let tag = read_hex_16();
+                let c = measure_decrypt(&key, &tag);
+                let _ = writeln!(u, "cyc {}", c);
+            }
+            b'g' => {
+                let key = read_hex_16();
+                let t = correct_tag(&key);
+                let _ = u.write_str("tag ");
+                send_hex(u, &t);
+                let _ = writeln!(u);
+            }
+            _ => {}
+        }
     }
 }

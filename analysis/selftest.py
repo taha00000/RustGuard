@@ -2,18 +2,18 @@
 """End-to-end pipeline self-test on SYNTHETIC data — no hardware required.
 
 This does NOT produce research results. It fabricates obviously-synthetic inputs
-and runs them through the exact same parse -> plot and TVLA -> figure code paths
-the bench uses, so you can confirm the whole chain works before the hardware
-arrives. Everything it writes goes to a separate, gitignored directory
+and runs them through the exact same parse -> plot and dudect-timing -> figure
+code paths the bench uses, so you can confirm the whole chain works before the
+hardware arrives. Everything it writes goes to a separate, gitignored directory
 (`results/_demo/`) and every figure is stamped with a red SYNTHETIC watermark.
 
 What it checks:
   * the perf parser + perf figure build from a TM4C-style UART dump
-  * the TVLA t-test flags a deliberately leaky control (|t| > 4.5)
-  * the TVLA t-test does NOT flag constant-time-like noise (|t| < 4.5)
+  * the dudect timing t-test flags a deliberately leaky control (|t| > 4.5)
+  * the dudect timing t-test does NOT flag constant-time-like timing (|t| < 4.5)
 
 When the real hardware is connected you run the *real* scripts instead:
-  capture_tvla.py -> results/traces/*.npz ; parse_perf.py -> results/*.csv ;
+  collect_timing.py -> results/timing/*.npz ; parse_perf.py -> results/*.csv ;
   make_figures.py -> results/figures/*.png  (no watermark, real data).
 
   python analysis/selftest.py
@@ -27,7 +27,7 @@ import numpy as np
 
 from parse_perf import parse
 from plot_perf import make_perf_figure
-from tvla import THRESHOLD, make_tvla_figure
+from dudect import THRESHOLD, make_dudect_figure
 from figutil import ensure_parent, read_perf_csv
 
 WATERMARK = "SYNTHETIC - PIPELINE SELF-TEST - NOT MEASURED DATA"
@@ -56,21 +56,25 @@ def _fake_perf_dump(base_cpb: float) -> str:
     return "\n".join(lines) + "\n"
 
 
-def _synth_traces(rng, n: int, samples: int, leak: bool):
-    """Fixed-vs-random traces. If leak=True, the random class gets a data-
-    dependent bump in a sample window (a stand-in for an early-return compare);
-    if False, both classes are the same noise (constant-time-like)."""
-    labels = np.tile([0, 1], n // 2).astype(np.uint8)  # interleaved fixed/random
-    traces = rng.normal(0.0, 1.0, size=(n, samples)).astype(np.float32)
+def _synth_timing(rng, n: int, leak: bool):
+    """Per-class cycle counts, like the TM4C timing harness would report. A small
+    measurement jitter is added so the t-test path is exercised normally. If
+    leak=True the random class returns earlier and with more spread (a stand-in
+    for the variable-time tag compare); otherwise both classes share one
+    distribution (constant-time)."""
+    labels = np.tile([0, 1], n // 2).astype(np.uint8)
+    cycles = rng.normal(4200.0, 2.0, size=n)  # constant-time baseline + tiny jitter
     if leak:
-        win = slice(samples // 2, samples // 2 + samples // 10)
-        traces[labels == 1, win] += 1.0  # random class leaks here
-    return traces, labels
+        # random class: early return -> fewer cycles, position-dependent spread
+        rand_mask = labels == 1
+        cycles[rand_mask] = rng.normal(4180.0, 8.0, size=int(rand_mask.sum()))
+    return np.rint(cycles).astype(np.uint32), labels
 
 
-def _save_npz(path, traces, labels, variant):
+def _save_timing(path, cycles, labels, variant, experiment):
     ensure_parent(path)
-    np.savez_compressed(path, traces=traces, labels=labels, variant=variant)
+    np.savez_compressed(path, cycles=cycles, labels=labels,
+                        variant=variant, experiment=experiment)
 
 
 def main() -> int:
@@ -89,7 +93,7 @@ def main() -> int:
         with open(dump_path, "w") as f:
             f.write(_fake_perf_dump(base))
         with open(dump_path) as f:
-            rows, perm = parse(f)
+            rows, _perm = parse(f)
         csv_path = os.path.join(DEMO_DIR, f"perf_{name}.csv")
         ensure_parent(csv_path)
         import csv as _csv
@@ -104,26 +108,25 @@ def main() -> int:
     perf_fig = make_perf_figure(datasets, os.path.join(fig_dir, "perf.png"), WATERMARK)
     print(f"  [perf] built {perf_fig} (3 synthetic implementations)")
 
-    # 2) TVLA: synth safe + leaky -> figure, and assert the verdicts
-    safe_tr, safe_lab = _synth_traces(rng, 2000, 200, leak=False)
-    leaky_tr, leaky_lab = _synth_traces(rng, 2000, 200, leak=True)
-    _save_npz(os.path.join(DEMO_DIR, "traces", "safe.npz"), safe_tr, safe_lab, "safe-synth")
-    _save_npz(os.path.join(DEMO_DIR, "traces", "leaky.npz"), leaky_tr, leaky_lab, "leaky-synth")
-    results = make_tvla_figure(
-        os.path.join(DEMO_DIR, "traces", "safe.npz"),
-        os.path.join(DEMO_DIR, "traces", "leaky.npz"),
-        os.path.join(fig_dir, "tvla.png"),
-        WATERMARK,
-    )
-    by = {r["label"].split()[0]: r for r in results}
+    # 2) dudect timing: synth safe + leaky -> figure, and assert the verdicts
+    safe_c, safe_l = _synth_timing(rng, 20000, leak=False)
+    leaky_c, leaky_l = _synth_timing(rng, 20000, leak=True)
+    safe_npz = os.path.join(DEMO_DIR, "timing", "safe.npz")
+    leaky_npz = os.path.join(DEMO_DIR, "timing", "leaky.npz")
+    _save_timing(safe_npz, safe_c, safe_l, "safe-synth", "tagcompare")
+    _save_timing(leaky_npz, leaky_c, leaky_l, "leaky-synth", "tagcompare")
+    results = make_dudect_figure(safe_npz, leaky_npz,
+                                 os.path.join(fig_dir, "timing.png"), WATERMARK)
+    by = {r["name"].split()[0]: r for r in results}
     if not by["leaky-control"]["leaking"]:
-        print("  [tvla] FAIL: synthetic leaky control did not trip the threshold")
+        print("  [timing] FAIL: synthetic leaky control did not trip the threshold")
         ok = False
     if by["safe"]["leaking"]:
-        print("  [tvla] FAIL: synthetic constant-time control falsely flagged")
+        print("  [timing] FAIL: synthetic constant-time control falsely flagged")
         ok = False
-    print(f"  [tvla] leaky peak |t|={by['leaky-control']['peak']:.1f} (>{THRESHOLD}), "
-          f"safe peak |t|={by['safe']['peak']:.1f} (<{THRESHOLD})")
+    lt = by["leaky-control"]["t"]
+    st = by["safe"]["t"]
+    print(f"  [timing] leaky |t|={lt:.1f} (>{THRESHOLD}), safe |t|={st:.1f} (<{THRESHOLD})")
 
     print("\n" + ("SELF-TEST PASSED" if ok else "SELF-TEST FAILED"))
     print("These figures are SYNTHETIC and watermarked. Real results come from "

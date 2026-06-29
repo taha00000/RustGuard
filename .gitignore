@@ -3,7 +3,7 @@
 Cargo.lock
 *.bin
 *.elf
-results/traces/*.npz
+results/timing/*.npz
 results/figures/*.png
 # Synthetic pipeline self-test output — never a real result, never committed.
 results/_demo/

@@ -2,7 +2,7 @@
 """Small shared helpers for the RustGuard figure scripts.
 
 Kept dependency-light (numpy + matplotlib only) so the analysis pipeline runs on
-any host without the ChipWhisperer stack installed.
+any host without the serial-collection dependencies installed.
 """
 from __future__ import annotations
 

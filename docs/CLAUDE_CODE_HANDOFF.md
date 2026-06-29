@@ -1,4 +1,4 @@
-# Handoff to Claude Code — RustGuard Reframe-1
+# Handoff to Claude Code — RustGuard
 
 You are picking up a research project mid-flight. This document is the single
 source of truth for what it is, what state it's in, and what to do next. Read it
@@ -6,122 +6,111 @@ fully before touching files.
 
 ## TL;DR
 
-RustGuard is being redirected from a (rejected-tier) "I implemented ASCON in
-Rust" paper into a real research contribution for a top-tier security venue. The
-new research question is:
+RustGuard was redirected from a (rejected-tier) "I implemented ASCON in Rust"
+paper into a real research contribution, then scoped to hardware the owner
+actually has: **a single Cortex-M4 (TM4C123), no oscilloscope or ChipWhisperer.**
+The research question:
 
 > Rust's `#![forbid(unsafe_code)]` + the `subtle` crate promise constant-time
-> crypto. Does that guarantee survive compilation to embedded silicon, and what
-> does memory safety cost in cycles versus C/asm — measured on real hardware?
+> crypto. Does that guarantee survive compilation to embedded silicon — detectable
+> as *timing* leakage measured on-chip with the DWT cycle counter (dudect method,
+> Reparaz et al. DATE 2017) — and what does memory safety cost in cycles versus
+> C/asm? Cross-checked across multiple Cortex-M4 boards.
 
-The owner is **taha00000**. He runs the hardware, makes the research calls, and
-authors all commits. Your job is to help land the code and keep the repo
-consistent — not to manufacture results.
+Power/EM side-channel analysis (which needs a ChipWhisperer-class rig) is
+explicitly **future work** and out of scope. The owner is **taha00000**; he runs
+the hardware, makes the research calls, and authors all commits.
 
 ## Repository layout
 
 ```
 rustguard-core/        ASCON-128 AEAD + HASH, no_std, forbid(unsafe). VERIFIED.
-  src/lib.rs           includes a gated leaky tag-check for TVLA control
   tests/kat.rs         REAL NIST KATs (8 vectors), all passing
-rustguard-pap/         revised protocol: reboot-robust nonce (epoch+counter+uid)
-  tests/integration.rs reboot/replay/tamper coverage
-firmware-tm4c/         performance firmware: real DWT cycles over UART
-firmware-stm32-tvla/   TVLA target: GPIO trigger, simpleserial-style protocol
-                       default build = constant-time DUT; --features leaky = control
-baseline-c/            pqm4 + ascon-c baselines as submodules (setup.sh)
-capture/               ChipWhisperer fixed-vs-random acquisition driver
-analysis/              tvla.py (Welch t-test), parse_perf.py
-docs/                  protocol_security.md, hardware_setup.md, experiment_runbook.md
+  src/lib.rs           gated ascon_aead_decrypt_variabletime = leaky control
+rustguard-pap/         reboot-robust nonce (epoch+counter+uid); integration tests
+firmware-tm4c/         default = perf benchmark (real DWT cycles over UART)
+                       --features timing       = dudect timing-leakage harness
+                       --features "timing leaky" = harness w/ variable-time compare
+capture/               collect_timing.py — drives the harness over UART (pyserial)
+analysis/              parse_perf, plot_perf, dudect (Welch t + histograms),
+                       make_figures (orchestrator), selftest (synthetic E2E)
+docs/                  protocol_security, hardware_setup, hardware_bom, runbook
 ```
 
-## What is DONE and trustworthy (host-verifiable, no hardware needed)
-
-These should compile and pass on any dev machine. Verify first thing:
+## What is DONE and trustworthy (host-verifiable, no hardware)
 
 ```sh
-cargo test -p rustguard-core      # KATs + (move tests/ unit tests if any)
-cargo test -p rustguard-pap       # reboot/replay/tamper integration tests
+cargo test -p rustguard-core -p rustguard-pap      # KATs + protocol, green
 cargo build -p rustguard-core --features tvla-leaky-control
+pip install -r analysis/requirements.txt
+python -m pytest analysis/tests                    # t-test + parser unit tests
+python analysis/selftest.py                        # full pipeline on synthetic data
 ```
 
-- The cipher is correct: its outputs were checked byte-for-byte against the
-  published ASCON reference for 8 vectors (empty, partial, full, multi-block,
-  with/without AD). Do not "optimize" the permutation without re-running KATs.
-- The leaky variant (`tvla-leaky-control`) is a deliberate positive control. It
-  must NEVER be enabled in a production/default build. Keep it gated.
+- The cipher is correct: byte-for-byte against the published ASCON reference for 8
+  vectors. Do not "optimize" the permutation without re-running KATs.
+- The leaky variant is a deliberate positive control. It must NEVER be enabled in
+  a production/default build. Keep it gated.
+- `selftest.py` proves the parse→plot→timing-leakage chain works and asserts the
+  t-test separates leaky from constant-time. Its figures are watermarked and land
+  in gitignored `results/_demo/` — never a result.
 
-## What is COMPLETE but HARDWARE-GATED (code is real; results need the bench)
+Firmware builds (need `rustup target add thumbv7em-none-eabihf`):
+```sh
+cd firmware-tm4c
+cargo check --release                       # perf
+cargo check --release --features timing     # timing harness
+cargo check --release --features "timing leaky"
+```
 
-These are finished and runnable, but produce *results* only on Taha's hardware.
-They are not stubs and must not be "completed" with fake/synthetic data.
+## What is HARDWARE-GATED (code is real; results need the TM4C)
 
-- `firmware-tm4c` — flashes and measures real cycles. The UART fix (external
-  USB-UART dongle, not ICDI) is documented in docs/hardware_setup.md.
-- `firmware-stm32-tvla` — has `TODO(hardware)` markers on register addresses and
-  `clocks_uart_init()` that must be confirmed against the actual STM32F303 part.
-  These are the ONLY places to fill in hardware specifics.
-- `capture/` and `analysis/` — the acquisition and TVLA t-test pipeline. Real,
-  standard ChipWhisperer API. Runs when a CW + flashed target are connected.
+- `firmware-tm4c` perf mode → real cycle counts over an external USB-UART dongle
+  (the ICDI fix is in docs/hardware_setup.md).
+- `firmware-tm4c --features timing` + `capture/collect_timing.py` → the timing-
+  leakage samples. Real serial driver; runs when a flashed board is connected.
+- These are not stubs and must not be "completed" with fake/synthetic data.
 
 ## What is intentionally NOT here
 
-- No power traces, no `.npz` results, no TVLA figures. Those come from Taha's
-  capture runs. If you find yourself about to generate trace data to "finish"
-  the repo — stop. Synthetic results are the exact failure that sank the old
-  paper (it shipped pqm4-derived numbers dressed as measurements). The whole
-  point of the redirect is that the numbers are real.
+- No measured cycle counts, no timing `.npz`, no figures. Those come from the
+  bench. If you find yourself about to generate data to "finish" the repo — stop.
+  Synthetic results dressed as measurements are exactly what sank the old paper.
+- No power-capture firmware or ChipWhisperer driver (removed in the M4-only
+  redirect; recoverable from git history if a capture rig is ever obtained).
 
 ## Your task list (in order)
 
-1. **Confirm the host-verifiable parts build and test green.** Fix any toolchain
-   triviality (versions, imports). Do not change cipher logic; if a KAT fails
-   after an edit, you broke something — revert.
-2. **Clean the old repo state.** When this lands on top of the existing clone,
-   delete the stale NDSS paper framing, the derived `benchmark_tm4c.txt` numbers,
-   and the old figures. Preserve history (do not force-push over main); make a
-   normal commit that removes them. See "Cleanup scope" below.
-3. **Wire CI** (`.github/workflows/ci.yml` is provided) so core + pap test on
-   every push, and the firmware crates at least `cargo check` for their target.
-4. **Help Taha as he brings up hardware** — fill the `TODO(hardware)` markers in
-   firmware-stm32-tvla once he confirms the board, build the two TVLA binaries,
-   and run capture → analysis. Let him operate the bench; you handle the code.
-5. **Paper changes come AFTER** the code is consistent and at least the perf
-   numbers are real. Taha will signal when to start on the .tex.
-
-## Cleanup scope (decided with the owner)
-
-Remove: old NDSS `.tex` framing that claims four "contributions" that are just
-artifacts; `results/raw/benchmark_tm4c.txt` and any file containing
-pqm4-*derived* numbers; old figures built from derived data; the self-consistency
-tests previously mislabeled as "nist_kat". Keep: the verified cipher, real KATs,
-the firmware that genuinely measures, LICENSE, and anything the new experiment
-uses. When in doubt, ask Taha — don't silently delete research history.
+1. Confirm the host-verifiable parts build/test green. Fix toolchain trivia only;
+   if a KAT fails after an edit, revert — you broke the cipher.
+2. Help Taha bring up the board: flash perf, capture, parse; then flash the timing
+   harness (leaky first, then safe), collect, and run `analysis/dudect.py`.
+3. Optimization-level sweep (the core novelty) and, optionally, port the timing
+   harness to a second M4 board (only uart_init/getc/putc are board-specific).
+4. Paper changes come AFTER the code is consistent and at least the perf and the
+   leaky-vs-safe timing results are real. Taha signals when to start on the .tex.
 
 ## Commits
 
-Author commits as Taha (his git config: name `taha00000`, his email). This is
-his work and his repo, so he is the author — that is normal and correct. Write
-honest commit messages describing what changed. Do not fabricate authorship of
-intellectual contributions: the research question, the hardware results, and the
-claims are his. The tooling being AI-assisted is fine and need not be hidden, but
-it also should not be misrepresented — just describe the change, not who typed it.
+Author commits as Taha (git config: name `taha00000`, his email). His work, his
+repo, his author line — normal and correct. Write honest messages describing what
+changed. The tooling being AI-assisted is fine and need not be hidden, nor
+misrepresented — describe the change, not who typed it.
 
 ## Hard boundaries (do not cross, regardless of deadline pressure)
 
-- Never generate, interpolate, or "placeholder" experimental results (traces,
-  cycle counts, t-statistics) and present them as measured. Mark anything
-  pending as pending.
+- Never generate, interpolate, or "placeholder" experimental results (cycle
+  counts, timing samples, t-statistics) and present them as measured.
 - Never enable the leaky control in a default build.
 - Never weaken or skip the KATs to make a refactor pass.
 - If asked to make results look better than the data supports, decline and say
-  why. A reviewer catching fabricated data ends the paper and the reputation;
-  protecting Taha from that is part of the job.
+  why. A reviewer catching fabricated data ends the paper and the reputation.
 
-## Quick orientation commands
+## Quick orientation
 
 ```sh
 cargo test -p rustguard-core -p rustguard-pap     # should be green
-rg "TODO\(hardware\)"                             # the only place HW specifics go
+python analysis/selftest.py                       # should print SELF-TEST PASSED
 cat docs/experiment_runbook.md                    # end-to-end bench workflow
+cat docs/hardware_bom.md                          # what to buy (just M4 + dongle)
 ```

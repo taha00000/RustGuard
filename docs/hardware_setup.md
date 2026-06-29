@@ -1,86 +1,101 @@
 # Hardware setup
 
-Two targets. The performance story runs on the TM4C123; the side-channel (TVLA)
-story runs on the STM32F303 on a ChipWhisperer CW308 because its capture path is
-clean and natively supported. Keeping them separate is deliberate and strengthens
-the paper — the constant-time finding is shown not to be an artifact of one board.
+Everything runs on a **single Cortex-M4** (the TM4C123 you already have) plus a
+USB-UART dongle. No oscilloscope, no ChipWhisperer. Both halves of the study —
+performance and timing leakage — use the same board and the same UART; only the
+firmware build differs.
 
 ---
 
-## Target A — TM4C123GH6PM (performance / cycle counts)
+## The board and the UART (read first)
 
-**Board:** EK-TM4C123GXL LaunchPad. **Clock:** start at 16 MHz internal; the
+**Board:** EK-TM4C123GXL LaunchPad. **Clock:** 16 MHz internal to start; the
 80 MHz PLL is an optional second data point.
 
 ### The UART capture fix (this is what failed before)
 
-Do **not** rely on the ICDI virtual COM port — that is the Windows driver
-conflict that blocked capture in the previous attempt. Instead:
+Do **not** rely on the ICDI virtual COM port — that is the Windows driver conflict
+that blocked capture in the previous attempt. Instead:
 
 1. Wire an external USB-UART dongle (FT232RL or CP2102):
    - dongle **RX** ← LaunchPad **PA1** (UART0 TX)
+   - dongle **TX** → LaunchPad **PA0** (UART0 RX) — needed for the timing harness,
+     which receives commands from the host
    - dongle **GND** ← LaunchPad **GND**
-   - (TX→PA0 only needed if you later send commands to the board)
 2. Open the dongle's COM port at **115200 8N1**.
-3. Flash with `cargo build --release` in `firmware-tm4c/`, convert to `.bin`
-   with `arm-none-eabi-objcopy`, and load via `lm4flash` (open-source, avoids
-   LM Flash Programmer / ICDI entirely).
-4. Capture the serial dump to a file, then `python analysis/parse_perf.py dump.txt`.
+3. Flash with `cargo build --release [--features ...]` in `firmware-tm4c/`, convert
+   to `.bin` with `arm-none-eabi-objcopy`, and load via `lm4flash` (open-source,
+   avoids LM Flash Programmer / ICDI entirely).
 
 This produces **real measured** cycle counts — the derived pqm4-scaled numbers
 from the old repo are gone and must never come back.
 
 ---
 
-## Target B — STM32F303 on CW308 UFO (side-channel / TVLA)
-
-**Why not the TM4C for TVLA?** The TM4C is not a stock ChipWhisperer target;
-power capture would need a custom shunt and the alignment quality is worse. The
-STM32F3 sits in the CW308 socket with a measurement path designed for this.
-
-### Wiring / trigger
-
-- CW308 provides the measurement shunt and the **tio4** trigger line.
-- Firmware raises **PA12 → CW308 GPIO4 (trigger)** immediately before the crypto
-  op and lowers it immediately after. **Do not use a UART trigger** — its jitter
-  destroys first-order TVLA alignment.
-- UART to the target at **38400 8N1** (ChipWhisperer default) for the
-  simpleserial-style key/plaintext protocol.
-
-> TODO(hardware): the register addresses and `clocks_uart_init()` in
-> `firmware-stm32-tvla/src/main.rs` are marked and must be confirmed against the
-> exact STM32F303 part on your CW308 before the first capture. The trigger pin
-> (PA12) is the documented default — verify continuity to tio4 with a meter.
-
-### Two builds, always
+## Mode A — performance (default build)
 
 ```sh
-# 1. positive control — known-leaking, validates the whole chain
-cargo build --release --features leaky    # -> leaky binary
-#    flash it, then:
-python capture/rustguard_capture/capture_tvla.py --variant leaky \
-       --out results/traces/leaky.npz
+cd firmware-tm4c && cargo build --release && <flash>
+# capture the UART dump, then:
+python ../analysis/parse_perf.py dump.txt --out ../results/perf_rust.csv
+```
+The firmware streams `PERM/ENC/DEC ... mean_cyc=...` lines and ends with
+`SECTION:DONE`. Repeat for the C and pqm4 baselines (see `baseline-c/`).
 
-# 2. device under test — the constant-time implementation
-cargo build --release                     # -> safe binary
-#    flash it, then:
-python capture/rustguard_capture/capture_tvla.py --variant safe \
-       --out results/traces/safe.npz
+## Mode B — timing leakage (`--features timing`)
 
-# 3. analyze both together
-python analysis/tvla.py results/traces/safe.npz \
-       --leaky-npz results/traces/leaky.npz
+The same board becomes the side-channel instrument. The firmware enters a command
+loop; the host (`capture/collect_timing.py`) drives fixed-vs-random inputs and
+reads back the DWT cycle count the firmware measures with interrupts disabled.
+
+```sh
+# leaky positive control first (validates the method)
+cargo build --release --features "timing leaky" && <flash>
+python ../capture/collect_timing.py --port COM5 --experiment tagcompare \
+       --variant leaky --out ../results/timing/leaky.npz
+# constant-time device under test
+cargo build --release --features timing && <flash>
+python ../capture/collect_timing.py --port COM5 --experiment tagcompare \
+       --variant safe --out ../results/timing/safe.npz
+# analyze
+python ../analysis/dudect.py ../results/timing/safe.npz \
+       --leaky ../results/timing/leaky.npz
 ```
 
-If the leaky control does not exceed |t| = 4.5, the rig is broken and the safe
-result is meaningless. The paper reports both, in that order.
+If the leaky control does not exceed |t| = 4.5, the harness or the sample count is
+wrong and the safe result is meaningless. The paper reports both, in that order.
+
+Why timing works here: ASCON on Cortex-M4 uses only fixed-cycle bitwise ops, so a
+constant-time implementation yields input-independent cycle counts; the variable-
+time tag compare returns early on a mismatch, which the cycle counter sees
+directly. This is the dudect method (DATE 2017), and it needs no external probe.
+
+---
+
+## Cross-silicon (optional)
+
+Porting the timing harness to another Cortex-M4 (STM32F4 "Black Pill" ~$8,
+nRF52840, a second TM4C) is a small change: **only `uart_init` / `getc` / `putc`
+are board-specific** — the DWT cycle counter, the crypto, and the protocol are
+identical across M4 parts. Running the same experiment on multiple vendors shows
+the constant-time finding is not a single-microarchitecture artifact.
+
+---
+
+## Out of scope: power / EM
+
+Power and electromagnetic side channels can leak even from constant-*time* code
+and would need a ChipWhisperer-class capture rig. That is deliberately **future
+work**; the previous power-capture firmware and ChipWhisperer driver were removed
+to keep the repo consistent with what runs on a bare board. They remain in git
+history if a capture rig becomes available later.
 
 ---
 
 ## Epoch persistence (for the protocol claim)
 
 The reboot-robustness claim depends on durably committing the boot epoch. On the
-TM4C use the on-chip EEPROM (2 KB) with a two-slot A/B record and a validity
-flag, so a write torn by brown-out is detected and the last good epoch is used.
-Wiring this into `firmware-tm4c` is a TODO; the protocol crate exposes the
-`EpochStore` trait for exactly this.
+TM4C use the on-chip EEPROM (2 KB) with a two-slot A/B record and a validity flag,
+so a write torn by brown-out is detected and the last good epoch is used. Wiring
+this into `firmware-tm4c` is a TODO; the protocol crate exposes the `EpochStore`
+trait for exactly this.

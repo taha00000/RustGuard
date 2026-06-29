@@ -9,6 +9,14 @@ cortex-m = "0.7"
 cortex-m-rt = "0.7"
 panic-halt = "0.2"
 
+[features]
+default = []
+# dudect-style timing-leakage harness instead of the perf benchmark.
+timing = []
+# Links the variable-time tag check as the timing-leakage positive control.
+# Only meaningful together with `timing`.
+leaky = ["rustguard-core/tvla-leaky-control"]
+
 [profile.release]
 opt-level = 3
 lto = true

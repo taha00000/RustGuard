@@ -74,6 +74,27 @@ Tips for clean timing samples: the harness already disables interrupts and uses
 (the collector does this) rejects slow drift. Also run `--experiment encrypt` to
 check the encrypt path, not just the tag compare.
 
+## 2b. Binary-level constant-time census [HOST — no board needed]
+
+The static leg of the triangulation: disassemble the *compiled* thumb image and
+census the control flow per function. No hardware — it runs on any host with the
+LLVM tools.
+
+```sh
+rustup component add llvm-tools           # provides rust-objdump / llvm-objdump
+cd ct-probe && cargo build --release      # builds the symbol-probe staticlib
+LIB=$(find . -path '*thumbv7em*/release/libct_probe.a' | head -1)
+python ../analysis/ct_binary.py --elf "$LIB" \
+       --fig ../results/figures/ct_binary.png --table ../results/tables/ct_binary.md
+```
+
+Expected: the constant-time decrypt shows only public-loop branches, while the
+variable-time (leaky) decrypt shows extra conditional branches — the
+`safe-vs-leaky differential` localizing the secret-dependent early return in the
+actual binary. Rebuild `ct-probe` at different `-O` levels
+(`CARGO_PROFILE_RELEASE_OPT_LEVEL=n`) and re-run to see whether the optimizer
+changes the branch structure — the binary-level analogue of step 3.
+
 ## 3. Optimization-level sweep (the compiler-betrayal angle) [BENCH]
 
 Rebuild the constant-time timing firmware at `opt-level = 0,1,2,3` (set in
@@ -106,6 +127,7 @@ Figures (`results/figures/`):
 - `timing.png`          — dudect histograms, leaky control vs constant-time DUT (step 2)
 - `timing_convergence.png` — |t| vs number of traces (statistical rigor)
 - `opt_sweep.png`       — peak |t| vs optimization level (step 3, the headline)
+- `ct_binary.png`       — binary control-flow census, constant-time vs leaky (step 2b)
 
 Tables (`results/tables/`, Markdown + LaTeX `\input`-ready):
 - `perf_cycles` — per-size cycle counts + overhead

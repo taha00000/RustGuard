@@ -26,6 +26,27 @@ jobs:
           cargo check --release --features timing
           cargo check --release --features "timing leaky"
 
+  binary-ct:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: thumbv7em-none-eabihf
+          components: llvm-tools
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install -r analysis/requirements.txt
+      - name: Build ct-probe (thumbv7em) and analyze the compiled binary
+        working-directory: ct-probe
+        run: cargo build --release
+      - name: Binary-level constant-time census (must detect the leaky branch)
+        run: |
+          LIB=$(find . -path '*thumbv7em*/release/libct_probe.a' | head -1)
+          python analysis/ct_binary.py --elf "$LIB" \
+            --fig results/figures/ct_binary.png --table results/tables/ct_binary.md
+
   analysis:
     runs-on: ubuntu-latest
     steps:

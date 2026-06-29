@@ -5,14 +5,19 @@ so anyone (including future-me) can pick it up without guessing.
 
 ## What it is
 
-A memory-safe `no_std` ASCON-128 used as the device under test for measuring,
-on a single Cortex-M4 (TM4C123, no oscilloscope):
+A memory-safe `no_std` ASCON-128 used as the device under test for a
+source-to-silicon constant-time study on a single Cortex-M4 (TM4C123, no
+oscilloscope). It triangulates three independent checks of the constant-time
+property:
 
-1. whether the source-level constant-time property survives compilation, detected
-   as *timing* leakage on-chip with the DWT cycle counter (dudect method); and
-2. the cycle cost of memory safety, Rust vs the C reference and pqm4 assembly.
+1. **source** — differential correctness against the ASCON reference (KATs);
+2. **binary** — a control-flow census of the compiled thumb image
+   (`analysis/ct_binary.py`), with the safe-vs-leaky differential localizing
+   secret-dependent branches in the actual artifact;
+3. **silicon** — dudect timing leakage on-chip via the DWT cycle counter.
 
-Power/EM side-channel analysis (needs a capture rig) is explicitly future work.
+Plus the cycle cost of memory safety (Rust vs C vs pqm4 asm). Power/EM analysis
+(needs a capture rig) and a machine-checked CT proof (Kani/Verus) are future work.
 
 ## Verified today (host, no hardware)
 
@@ -32,6 +37,9 @@ python analysis/selftest.py                        # full pipeline on synthetic 
   firmware crate.
 - The leaky variant is a deliberate positive control, gated behind a feature. It
   must never be enabled in a production/default build.
+- Binary census: `ct-probe` builds for thumb and `analysis/ct_binary.py` reports
+  the safe-vs-leaky branch differential (the leak, localized in the binary). Runs
+  in CI on every push.
 
 Firmware (needs `rustup target add thumbv7em-none-eabihf`):
 ```sh

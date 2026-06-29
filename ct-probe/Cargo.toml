@@ -1,0 +1,24 @@
+[package]
+name = "ct-probe"
+version = "0.1.0"
+edition = "2021"
+
+# A no_std staticlib whose only purpose is to expose each crypto primitive as a
+# distinct, non-inlined symbol so the binary-level constant-time analyzer
+# (analysis/ct_binary.py) can locate and disassemble it. Not production code.
+[lib]
+crate-type = ["staticlib"]
+
+[dependencies]
+# Pull in the leaky control too, so one ELF carries both the constant-time and
+# the variable-time decrypt for the safe-vs-leaky differential.
+rustguard-core = { path = "../rustguard-core", features = ["tvla-leaky-control"] }
+
+[profile.release]
+opt-level = 3
+lto = false        # keep functions as distinct symbols for analysis
+codegen-units = 1
+panic = "abort"
+
+[profile.dev]
+panic = "abort"

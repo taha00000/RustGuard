@@ -8,6 +8,7 @@ results/figures/*.png
 results/tables/*.md
 results/tables/*.tex
 results/size.txt
+results/ct_disasm.txt
 # Synthetic pipeline self-test output — never a real result, never committed.
 results/_demo/
 __pycache__/

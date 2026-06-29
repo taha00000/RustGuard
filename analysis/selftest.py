@@ -29,7 +29,30 @@ from plot_perf import make_all_perf
 from dudect import THRESHOLD, make_convergence_figure, make_dudect_figure
 from opt_sweep import make_opt_sweep
 from tables import _build_from_results
+from ct_binary import census_disasm, differential, report as ct_report
 from figutil import ensure_parent, read_perf_csv
+
+# A synthetic disassembly (rust-objdump format) standing in for the compiled
+# ct-probe object: a constant-time decrypt with 2 public-loop branches and a
+# variable-time decrypt with 5 (the extra 3 = the secret-dependent early return).
+SYNTH_DISASM = """\
+00000000 <_ZN14rustguard_core18ascon_aead_decrypt17h0000000000000000E>:
+       0: \tcbz\tr0, 0x10 <x>
+       4: \tbne\t0x0 <y>
+       8: \tbx\tlr
+
+00000020 <_ZN14rustguard_core31ascon_aead_decrypt_variabletime17h1111111111111111E>:
+      20: \tbeq\t0x40 <a>
+      24: \tbne\t0x40 <b>
+      28: \tcbnz\tr2, 0x40 <c>
+      2c: \tcbz\tr3, 0x40 <d>
+      30: \tblt\t0x40 <e>
+      34: \tbx\tlr
+
+00000050 <_ZN14rustguard_core18ascon_aead_encrypt17h2222222222222222E>:
+      50: \tbl\t0x100 <s>
+      54: \tbx\tlr
+"""
 
 WATERMARK = "SYNTHETIC - PIPELINE SELF-TEST - NOT MEASURED DATA"
 DEMO = os.path.join("results", "_demo")
@@ -144,9 +167,20 @@ def main() -> int:
         if need not in names:
             print(f"  [tables] FAIL: missing table {need}"); ok = False
 
+    # 5) binary-level CT census on a synthetic disassembly (no toolchain needed)
+    cen = census_disasm(SYNTH_DISASM)
+    ct_report(cen, os.path.join(figs, "ct_binary.png"),
+              os.path.join(tbls, "ct_binary.md"), WATERMARK)
+    diff = differential(cen)
+    if not diff or diff[2] <= 0:
+        print("  [binary] FAIL: differential did not localize the leaky branch"); ok = False
+    else:
+        print(f"  [binary] constant-time={diff[0]} cond, variable-time={diff[1]} cond, "
+              f"extra={diff[2]} (leak localized)")
+
     print("\n" + ("SELF-TEST PASSED" if ok else "SELF-TEST FAILED"))
-    print(f"Built 6 figures + 4 tables under {DEMO}/ (SYNTHETIC, watermarked). "
-          "Real results come from the bench via make_figures.py.")
+    print(f"Built 7 figures + 5 tables under {DEMO}/ (SYNTHETIC, watermarked). "
+          "Real results come from the bench via make_figures.py + ct_binary.py.")
     return 0 if ok else 1
 
 

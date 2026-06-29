@@ -33,6 +33,7 @@ from plot_perf import make_all_perf
 from dudect import make_convergence_figure, make_dudect_figure
 from opt_sweep import make_opt_sweep
 from tables import _build_from_results
+from ct_binary import census_disasm, disassemble, report as ct_report
 
 
 def build_perf(results_dir, fig_dir):
@@ -60,6 +61,32 @@ def build_timing(results_dir, fig_dir):
         print("[timing] WARNING: no leaky.npz control — safe result cannot be validated")
     make_dudect_figure(safe, leaky, os.path.join(fig_dir, "timing.png"))
     make_convergence_figure(safe, leaky, os.path.join(fig_dir, "timing_convergence.png"))
+    return True
+
+
+def build_ct_binary(results_dir, fig_dir, tbl_dir):
+    # Prefer a saved disassembly; else disassemble the built ct-probe staticlib.
+    disasm = os.path.join(results_dir, "ct_disasm.txt")
+    text = None
+    if os.path.exists(disasm):
+        text = open(disasm).read()
+    else:
+        for libname in ("libct_probe.a", "ct_probe.lib"):
+            for base, _d, files in os.walk("."):
+                if "thumbv7em" in base and libname in files:
+                    try:
+                        text = disassemble(os.path.join(base, libname))
+                    except Exception:
+                        text = None
+                    break
+            if text:
+                break
+    if not text:
+        print("[binary] no ct_disasm.txt or built ct-probe staticlib — skipping "
+              "(see docs: build ct-probe, rust-objdump -d > results/ct_disasm.txt)")
+        return False
+    ct_report(census_disasm(text), os.path.join(fig_dir, "ct_binary.png"),
+              os.path.join(tbl_dir, "ct_binary.md"))
     return True
 
 
@@ -92,6 +119,8 @@ def main():
         built.append("perf")
     if build_timing(a.results_dir, fig_dir):
         built.append("timing")
+    if build_ct_binary(a.results_dir, fig_dir, tbl_dir):
+        built.append("ct-binary")
     if build_opt_sweep(a.results_dir, fig_dir, tbl_dir):
         built.append("opt-sweep")
 

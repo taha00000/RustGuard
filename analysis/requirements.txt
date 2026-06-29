@@ -1,0 +1,6 @@
+# Analysis + figure pipeline (host-side, no hardware needed).
+# The ChipWhisperer capture stack has its own heavier requirements in
+# capture/requirements.txt; keep these light so figures/tests run anywhere.
+numpy>=1.24
+matplotlib>=3.7
+pytest>=7.0

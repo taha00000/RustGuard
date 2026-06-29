@@ -34,6 +34,12 @@ try:
 except ImportError:
     plt = None
 
+try:
+    from figutil import watermark
+except ImportError:  # allow running from a different cwd
+    def watermark(_fig, _text):
+        pass
+
 THRESHOLD = 4.5
 
 
@@ -62,22 +68,21 @@ def load(path):
     return d["traces"], d["labels"], str(d.get("variant", "unknown"))
 
 
-def main():
-    ap = argparse.ArgumentParser(description=__doc__)
-    ap.add_argument("safe_npz", help="capture from the constant-time firmware")
-    ap.add_argument("--leaky-npz", help="capture from the leaky-control firmware")
-    ap.add_argument("--plot", default="results/figures/tvla.png")
-    cfg = ap.parse_args()
-
+def make_tvla_figure(safe_npz, leaky_npz=None,
+                     plot="results/figures/tvla.png", watermark_text=None):
+    """Run the TVLA on a safe capture (and optional leaky control) and write the
+    t-trace figure. Returns the per-class summary dicts. Importable by
+    make_figures.py and the self-test.
+    """
     results = []
 
-    tr_s, lab_s, var_s = load(cfg.safe_npz)
+    tr_s, lab_s, var_s = load(safe_npz)
     t_safe = welch_t(tr_s, lab_s)
     results.append(summarize(t_safe, f"safe ({var_s})"))
 
     t_leaky = None
-    if cfg.leaky_npz:
-        tr_l, lab_l, var_l = load(cfg.leaky_npz)
+    if leaky_npz:
+        tr_l, lab_l, var_l = load(leaky_npz)
         t_leaky = welch_t(tr_l, lab_l)
         r = summarize(t_leaky, f"leaky-control ({var_l})")
         results.append(r)
@@ -101,11 +106,26 @@ def main():
             axes[1][0].set_title("Leaky positive control (early-return compare)")
             axes[1][0].set_ylabel("t-statistic")
         axes[-1][0].set_xlabel("sample index")
+        watermark(fig, watermark_text)
         fig.tight_layout()
         import os
-        os.makedirs(os.path.dirname(cfg.plot) or ".", exist_ok=True)
-        fig.savefig(cfg.plot, dpi=150)
-        print(f"figure -> {cfg.plot}")
+        os.makedirs(os.path.dirname(plot) or ".", exist_ok=True)
+        fig.savefig(plot, dpi=150)
+        plt.close(fig)
+        print(f"figure -> {plot}")
+
+    return results
+
+
+def main():
+    ap = argparse.ArgumentParser(description=__doc__)
+    ap.add_argument("safe_npz", help="capture from the constant-time firmware")
+    ap.add_argument("--leaky-npz", help="capture from the leaky-control firmware")
+    ap.add_argument("--plot", default="results/figures/tvla.png")
+    ap.add_argument("--watermark", default=None,
+                    help="diagonal stamp (used by the self-test for synthetic data)")
+    cfg = ap.parse_args()
+    make_tvla_figure(cfg.safe_npz, cfg.leaky_npz, cfg.plot, cfg.watermark)
 
 
 if __name__ == "__main__":

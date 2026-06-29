@@ -27,3 +27,17 @@ jobs:
         run: |
           cargo check --release
           cargo check --release --features leaky
+
+  analysis:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install analysis deps
+        run: pip install -r analysis/requirements.txt
+      - name: Unit tests (TVLA t-test, perf parser)
+        run: python -m pytest analysis/tests -q
+      - name: Pipeline self-test (synthetic, end-to-end)
+        run: python analysis/selftest.py

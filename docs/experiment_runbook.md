@@ -11,6 +11,17 @@ cargo test -p rustguard-core -p rustguard-pap
 Both crates green = the cipher matches the ASCON spec (KATs) and the revised
 protocol behaves (reboot/replay/tamper). Do this before anything else.
 
+Then dry-run the figure pipeline on synthetic data (still no hardware):
+
+```sh
+pip install -r analysis/requirements.txt
+python analysis/selftest.py
+```
+This confirms the perf parser, the perf figure, and the TVLA t-test all work
+end-to-end. It writes **watermarked, synthetic** figures to `results/_demo/`
+(gitignored) — they are a pipeline check, never a result. See
+`docs/hardware_bom.md` for exactly what to buy.
+
 ## 1. Performance: Rust vs C/asm on TM4C [BENCH]
 
 ```sh
@@ -64,10 +75,20 @@ novelty — keep the trace counts equal across builds for a fair comparison.
 
 ## 4. Figures the paper needs
 
-- F1: cycles/byte, Rust vs C vs asm, across payload sizes (from step 1).
-- F2: TVLA t-trace, leaky control vs constant-time DUT (from step 2).
-- F3: peak |t| vs optimization level (from step 3).
+Build everything you have inputs for with one command:
+
+```sh
+python analysis/make_figures.py     # -> results/figures/{perf,tvla}.png
+```
+It picks up whatever is in `results/` (perf CSVs and/or TVLA `.npz`) and skips
+the rest, so it works after step 1 alone, step 2 alone, or both.
+
+- F1: cycles/byte, Rust vs C vs asm, across payload sizes (from step 1) → `perf.png`.
+- F2: TVLA t-trace, leaky control vs constant-time DUT (from step 2) → `tvla.png`.
+- F3: peak |t| vs optimization level (from step 3) — capture each opt-level build
+  to a separate `safe.npz` and run `analysis/tvla.py` per build.
 - F4: (optional) the reboot/nonce-reuse illustration for the protocol section.
 
 Steps 1–3 produce real artifacts only on the bench. Nothing in this repo
-fabricates them; that is by design.
+fabricates them; that is by design. The synthetic `results/_demo/` figures from
+`selftest.py` are watermarked and never enter `results/figures/`.

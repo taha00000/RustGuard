@@ -5,6 +5,8 @@ Cargo.lock
 *.elf
 results/traces/*.npz
 results/figures/*.png
+# Synthetic pipeline self-test output — never a real result, never committed.
+results/_demo/
 __pycache__/
 *.pyc
 .venv/

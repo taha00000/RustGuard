@@ -31,14 +31,28 @@ use rustguard_core::ascon_aead_decrypt as aead_decrypt;
 #[cfg(feature = "leaky")]
 use rustguard_core::ascon_aead_decrypt_variabletime as aead_decrypt;
 
-// NOTE: register addresses below target STM32F303RCT on the CW308. They are
-// placeholders documented in docs/hardware_setup.md and must be confirmed
-// against the actual board revision before the first capture run. The trigger
-// pin is the CW308 standard GPIO4/trigger line.
-
 mod board {
-    //! Thin MMIO layer. Isolated `unsafe` for register access only; the crypto
-    //! crates remain `forbid(unsafe_code)`.
+    //! Thin MMIO layer for the STM32F303RCT on the CW308 (CW308T-STM32F3).
+    //! Isolated `unsafe` for register access only; the crypto crates remain
+    //! `forbid(unsafe_code)`. All register addresses/bit positions are from the
+    //! STM32F3 reference manual RM0316.
+    //!
+    //! ## Board-specific values — verify on first bring-up
+    //! These three are the standard CW308T-STM32F3 wiring. If your target board
+    //! revision differs, these are the only constants to change:
+    //!   * UART     : USART2 on PA2 (TX) / PA3 (RX), AF7   [`CW308 J1 UART hdr`]
+    //!   * trigger  : PA12 -> CW308 GPIO4/tio4 trigger line
+    //!   * baud     : 38400 8N1 (ChipWhisperer default; matches capture script)
+    //! Bring-up checklist is in docs/hardware_setup.md: confirm the 'k'->'z' ack
+    //! over UART, then scope the trigger pin, before trusting any capture.
+    //!
+    //! ## Clock
+    //! Runs on the internal HSI (8 MHz), which is always present, so the UART and
+    //! protocol come up the instant you flash — no dependency on an external
+    //! clock for first bring-up. For the *synchronous* capture that gives the
+    //! cleanest first-order TVLA (CW `clkgen_x4`), feed the CW-provided clock to
+    //! the target and switch to HSE-bypass; see CLOCK_HZ below and the runbook.
+
     #[inline(always)]
     pub fn rd(a: u32) -> u32 {
         unsafe { core::ptr::read_volatile(a as *const u32) }
@@ -48,34 +62,74 @@ mod board {
         unsafe { core::ptr::write_volatile(a as *mut u32, v) }
     }
 
-    // ── TODO(hardware): confirm these against the STM32F303 reference manual ──
-    pub const TRIG_PORT_BSRR: u32 = 0x4800_0418; // GPIOA BSRR (set/reset)
-    pub const TRIG_PIN: u32 = 1 << 12; // PA12 -> CW308 trigger (verify)
+    // ── RM0316 register map ──────────────────────────────────────────────────
+    const RCC_AHBENR: u32 = 0x4002_1014; // GPIO port clocks live on AHB
+    const RCC_APB1ENR: u32 = 0x4002_101C; // USART2 clock lives on APB1
+    const RCC_AHBENR_IOPAEN: u32 = 1 << 17; // GPIOA clock enable
+    const RCC_APB1ENR_USART2EN: u32 = 1 << 17; // USART2 clock enable
 
-    pub const USART_TDR: u32 = 0x4000_4428;
-    pub const USART_RDR: u32 = 0x4000_4424;
-    pub const USART_ISR: u32 = 0x4000_441C;
+    const GPIOA_MODER: u32 = 0x4800_0000;
+    const GPIOA_AFRL: u32 = 0x4800_0020; // alt-function low (pins 0..7)
+    const GPIOA_BSRR: u32 = 0x4800_0018; // atomic set/reset
+
+    const USART2_BRR: u32 = 0x4000_440C;
+    const USART2_CR1: u32 = 0x4000_4400;
+    const USART_ISR: u32 = 0x4000_441C;
+    const USART_RDR: u32 = 0x4000_4424;
+    const USART_TDR: u32 = 0x4000_4428;
+    const USART_ISR_RXNE: u32 = 1 << 5;
+    const USART_ISR_TXE: u32 = 1 << 7;
+    const USART_CR1_UE: u32 = 1 << 0;
+    const USART_CR1_RE: u32 = 1 << 2;
+    const USART_CR1_TE: u32 = 1 << 3;
+
+    // ── Board-specific (see module doc) ──────────────────────────────────────
+    /// HSI default. Set to the CW clkgen frequency (e.g. 7_370_000) if you move
+    /// the target onto the external CW clock for synchronous capture.
+    pub const CLOCK_HZ: u32 = 8_000_000;
+    pub const BAUD: u32 = 38_400;
+    const TRIG_PIN: u32 = 1 << 12; // PA12
 
     pub fn trigger_high() {
-        wr(TRIG_PORT_BSRR, TRIG_PIN);
+        wr(GPIOA_BSRR, TRIG_PIN);
     }
     pub fn trigger_low() {
-        wr(TRIG_PORT_BSRR, TRIG_PIN << 16);
+        wr(GPIOA_BSRR, TRIG_PIN << 16); // upper half-word = reset
     }
 
     pub fn putc(b: u8) {
-        while rd(USART_ISR) & (1 << 7) == 0 {} // TXE
+        while rd(USART_ISR) & USART_ISR_TXE == 0 {}
         wr(USART_TDR, b as u32);
     }
     pub fn getc() -> u8 {
-        while rd(USART_ISR) & (1 << 5) == 0 {} // RXNE
+        while rd(USART_ISR) & USART_ISR_RXNE == 0 {}
         rd(USART_RDR) as u8
     }
+
+    /// Bring up GPIOA + USART2 and the trigger pin. HSI is already running after
+    /// reset (sysclk = HSI 8 MHz, AHB/APB1 prescalers = /1, so PCLK1 = 8 MHz), so
+    /// we only enable the peripheral clocks, mux the pins, and configure USART2.
     pub fn clocks_uart_init() {
-        // TODO(hardware): enable GPIO + USART clocks, set baud (38400 8N1 is the
-        // ChipWhisperer default), configure PA12 as output, USART pins as AF.
-        // Left as a documented stub so the capture host wiring can be validated
-        // against docs/hardware_setup.md before flashing.
+        // Peripheral clocks.
+        wr(RCC_AHBENR, rd(RCC_AHBENR) | RCC_AHBENR_IOPAEN);
+        wr(RCC_APB1ENR, rd(RCC_APB1ENR) | RCC_APB1ENR_USART2EN);
+
+        // PA2,PA3 -> alternate function (0b10); PA12 -> general output (0b01).
+        let mut moder = rd(GPIOA_MODER);
+        moder &= !((0b11 << 4) | (0b11 << 6) | (0b11 << 24)); // clear PA2/PA3/PA12
+        moder |= (0b10 << 4) | (0b10 << 6) | (0b01 << 24);
+        wr(GPIOA_MODER, moder);
+
+        // PA2,PA3 alternate function = AF7 (USART2 TX/RX).
+        let mut afrl = rd(GPIOA_AFRL);
+        afrl &= !((0xF << 8) | (0xF << 12));
+        afrl |= (7 << 8) | (7 << 12);
+        wr(GPIOA_AFRL, afrl);
+
+        // Baud: BRR = f_CK / baud (USART2 oversampling-by-16, integer divisor).
+        wr(USART2_BRR, CLOCK_HZ / BAUD);
+        // Enable USART2: UE | TE | RE. 8N1 is the reset default (M=0, no parity).
+        wr(USART2_CR1, USART_CR1_UE | USART_CR1_TE | USART_CR1_RE);
     }
 }
 

@@ -34,12 +34,18 @@ def main():
         rows, perm = parse(f)
     if not rows:
         sys.exit("no ENC/DEC lines found — check the UART dump")
+    # Persist the permutation micro-benchmarks as PERM rows (size = round count)
+    # so the permutation figure can read them back from the same CSV.
+    all_rows = list(rows)
+    for name, cyc in perm.items():
+        all_rows.append({"op": "PERM", "size": int(name[1:]),
+                         "mean_cyc": cyc, "cyc_per_byte": float(cyc)})
     import os; os.makedirs(os.path.dirname(a.out) or ".", exist_ok=True)
     with open(a.out, "w", newline="") as f:
         w = csv.DictWriter(f, fieldnames=["op","size","mean_cyc","cyc_per_byte"])
-        w.writeheader(); w.writerows(rows)
+        w.writeheader(); w.writerows(all_rows)
     print(f"p6={perm.get('p6')} p12={perm.get('p12')} cyc")
-    print(f"wrote {len(rows)} rows -> {a.out}")
+    print(f"wrote {len(all_rows)} rows ({len(rows)} ENC/DEC + {len(perm)} PERM) -> {a.out}")
 
 if __name__ == "__main__":
     main()

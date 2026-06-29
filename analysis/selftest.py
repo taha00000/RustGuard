@@ -2,135 +2,151 @@
 """End-to-end pipeline self-test on SYNTHETIC data — no hardware required.
 
 This does NOT produce research results. It fabricates obviously-synthetic inputs
-and runs them through the exact same parse -> plot and dudect-timing -> figure
-code paths the bench uses, so you can confirm the whole chain works before the
-hardware arrives. Everything it writes goes to a separate, gitignored directory
-(`results/_demo/`) and every figure is stamped with a red SYNTHETIC watermark.
+and runs them through the exact same code paths the bench uses — every figure and
+every table generator — so you can confirm the whole chain works before the
+hardware arrives. Everything it writes goes to a gitignored directory
+(`results/_demo/`) and every figure carries a red SYNTHETIC watermark.
 
-What it checks:
-  * the perf parser + perf figure build from a TM4C-style UART dump
-  * the dudect timing t-test flags a deliberately leaky control (|t| > 4.5)
-  * the dudect timing t-test does NOT flag constant-time-like timing (|t| < 4.5)
-
-When the real hardware is connected you run the *real* scripts instead:
-  collect_timing.py -> results/timing/*.npz ; parse_perf.py -> results/*.csv ;
-  make_figures.py -> results/figures/*.png  (no watermark, real data).
+It builds and checks all paper artifacts:
+  figures: perf_throughput, perf_overhead, perf_perm, timing, timing_convergence,
+           opt_sweep   (6)
+  tables : perf_cycles, timing, codesize, opt_sweep   (md + tex)
+and asserts the timing t-test flags the leaky control, clears the constant-time
+control, and that the opt-level sweep separates a clean level from a leaking one.
 
   python analysis/selftest.py
 """
 from __future__ import annotations
 
+import csv as _csv
 import os
 import sys
 
 import numpy as np
 
 from parse_perf import parse
-from plot_perf import make_perf_figure
-from dudect import THRESHOLD, make_dudect_figure
+from plot_perf import make_all_perf
+from dudect import THRESHOLD, make_convergence_figure, make_dudect_figure
+from opt_sweep import make_opt_sweep
+from tables import _build_from_results
 from figutil import ensure_parent, read_perf_csv
 
 WATERMARK = "SYNTHETIC - PIPELINE SELF-TEST - NOT MEASURED DATA"
-DEMO_DIR = os.path.join("results", "_demo")
+DEMO = os.path.join("results", "_demo")
 SIZES = [8, 16, 32, 64, 128, 256, 512]
 
 
-def _fake_perf_dump(base_cpb: float) -> str:
-    """A TM4C-firmware-style UART dump. `base_cpb` scales cycles/byte so the
-    three synthetic implementations differ (rust > cref > pqm4)."""
-    lines = [
-        "# RustGuard SYNTHETIC perf dump (self-test, not measured)",
-        f"PERM p6 mean_cyc={int(base_cpb * 6)}",
-        f"PERM p12 mean_cyc={int(base_cpb * 12)}",
-        "SECTION:ENCRYPT",
-    ]
+def _fake_perf_dump(base: float) -> str:
+    lines = ["# RustGuard SYNTHETIC perf dump (self-test, not measured)",
+             f"PERM p6 mean_cyc={int(base * 6)}", f"PERM p12 mean_cyc={int(base * 12)}",
+             "SECTION:ENCRYPT"]
     for sz in SIZES:
-        # mild fixed-overhead curve so cyc/byte falls with size, like real AEAD
-        mean = int(base_cpb * sz + base_cpb * 24)
+        mean = int(base * sz + base * 24)
         lines.append(f"ENC {sz} mean_cyc={mean} cpb_x100={int(mean * 100 / sz)}")
     lines.append("SECTION:DECRYPT")
     for sz in SIZES:
-        mean = int(base_cpb * sz + base_cpb * 26)
-        lines.append(f"DEC {sz} mean_cyc={mean}")
+        lines.append(f"DEC {sz} mean_cyc={int(base * sz + base * 26)}")
     lines.append("SECTION:DONE")
     return "\n".join(lines) + "\n"
 
 
-def _synth_timing(rng, n: int, leak: bool):
-    """Per-class cycle counts, like the TM4C timing harness would report. A small
-    measurement jitter is added so the t-test path is exercised normally. If
-    leak=True the random class returns earlier and with more spread (a stand-in
-    for the variable-time tag compare); otherwise both classes share one
-    distribution (constant-time)."""
-    labels = np.tile([0, 1], n // 2).astype(np.uint8)
-    cycles = rng.normal(4200.0, 2.0, size=n)  # constant-time baseline + tiny jitter
-    if leak:
-        # random class: early return -> fewer cycles, position-dependent spread
-        rand_mask = labels == 1
-        cycles[rand_mask] = rng.normal(4180.0, 8.0, size=int(rand_mask.sum()))
-    return np.rint(cycles).astype(np.uint32), labels
-
-
-def _save_timing(path, cycles, labels, variant, experiment):
+def _write_perf_csv(rows, perm, path):
     ensure_parent(path)
-    np.savez_compressed(path, cycles=cycles, labels=labels,
-                        variant=variant, experiment=experiment)
+    allrows = list(rows) + [{"op": "PERM", "size": int(k[1:]),
+                             "mean_cyc": v, "cyc_per_byte": float(v)}
+                            for k, v in perm.items()]
+    with open(path, "w", newline="") as f:
+        w = _csv.DictWriter(f, fieldnames=["op", "size", "mean_cyc", "cyc_per_byte"])
+        w.writeheader()
+        w.writerows(allrows)
+
+
+def _synth_timing(rng, n, leak):
+    labels = np.tile([0, 1], n // 2).astype(np.uint8)
+    cyc = rng.normal(4200.0, 2.0, size=n)
+    if leak:
+        cyc[labels == 1] = rng.normal(4180.0, 8.0, size=int((labels == 1).sum()))
+    return np.rint(cyc).astype(np.uint32), labels
+
+
+def _save_timing(path, cyc, lab, variant, experiment):
+    ensure_parent(path)
+    np.savez_compressed(path, cycles=cyc, labels=lab, variant=variant, experiment=experiment)
 
 
 def main() -> int:
-    print(f"=== RustGuard pipeline self-test (SYNTHETIC) -> {DEMO_DIR}/ ===")
+    print(f"=== RustGuard pipeline self-test (SYNTHETIC) -> {DEMO}/ ===")
     rng = np.random.default_rng(20260626)
-    fig_dir = os.path.join(DEMO_DIR, "figures")
-    raw_dir = os.path.join(DEMO_DIR, "raw")
-    os.makedirs(fig_dir, exist_ok=True)
-    os.makedirs(raw_dir, exist_ok=True)
+    figs = os.path.join(DEMO, "figures")
+    tbls = os.path.join(DEMO, "tables")
+    os.makedirs(figs, exist_ok=True)
     ok = True
 
-    # 1) perf: dump -> parse_perf.parse -> CSV -> read back -> figure
+    # 1) perf: dump -> parse -> CSV (+PERM) -> 3 figures
     datasets = {}
     for name, base in (("rust", 8.0), ("cref", 6.5), ("pqm4", 4.0)):
-        dump_path = os.path.join(raw_dir, f"perf_{name}.txt")
-        with open(dump_path, "w") as f:
+        dump = os.path.join(DEMO, "raw", f"perf_{name}.txt")
+        ensure_parent(dump)
+        with open(dump, "w") as f:
             f.write(_fake_perf_dump(base))
-        with open(dump_path) as f:
-            rows, _perm = parse(f)
-        csv_path = os.path.join(DEMO_DIR, f"perf_{name}.csv")
-        ensure_parent(csv_path)
-        import csv as _csv
-        with open(csv_path, "w", newline="") as f:
-            w = _csv.DictWriter(f, fieldnames=["op", "size", "mean_cyc", "cyc_per_byte"])
-            w.writeheader()
-            w.writerows(rows)
+        with open(dump) as f:
+            rows, perm = parse(f)
+        csv_path = os.path.join(DEMO, f"perf_{name}.csv")
+        _write_perf_csv(rows, perm, csv_path)
         datasets[name] = read_perf_csv(csv_path)
-        if not rows:
-            print(f"  [perf] FAIL: parser produced no rows for {name}")
-            ok = False
-    perf_fig = make_perf_figure(datasets, os.path.join(fig_dir, "perf.png"), WATERMARK)
-    print(f"  [perf] built {perf_fig} (3 synthetic implementations)")
+    built = make_all_perf(datasets, figs, WATERMARK)
+    print(f"  [perf]   {len(built)} figures (throughput, overhead, perm)")
+    if len(built) != 3:
+        print("  [perf]   FAIL: expected 3 perf figures"); ok = False
 
-    # 2) dudect timing: synth safe + leaky -> figure, and assert the verdicts
+    # 2) timing: safe + leaky -> histogram + convergence, assert verdicts
     safe_c, safe_l = _synth_timing(rng, 20000, leak=False)
     leaky_c, leaky_l = _synth_timing(rng, 20000, leak=True)
-    safe_npz = os.path.join(DEMO_DIR, "timing", "safe.npz")
-    leaky_npz = os.path.join(DEMO_DIR, "timing", "leaky.npz")
+    safe_npz = os.path.join(DEMO, "timing", "safe.npz")
+    leaky_npz = os.path.join(DEMO, "timing", "leaky.npz")
     _save_timing(safe_npz, safe_c, safe_l, "safe-synth", "tagcompare")
     _save_timing(leaky_npz, leaky_c, leaky_l, "leaky-synth", "tagcompare")
-    results = make_dudect_figure(safe_npz, leaky_npz,
-                                 os.path.join(fig_dir, "timing.png"), WATERMARK)
+    results = make_dudect_figure(safe_npz, leaky_npz, os.path.join(figs, "timing.png"), WATERMARK)
+    make_convergence_figure(safe_npz, leaky_npz,
+                            os.path.join(figs, "timing_convergence.png"), WATERMARK)
     by = {r["name"].split()[0]: r for r in results}
     if not by["leaky-control"]["leaking"]:
-        print("  [timing] FAIL: synthetic leaky control did not trip the threshold")
-        ok = False
+        print("  [timing] FAIL: synthetic leaky control did not trip threshold"); ok = False
     if by["safe"]["leaking"]:
-        print("  [timing] FAIL: synthetic constant-time control falsely flagged")
-        ok = False
-    lt = by["leaky-control"]["t"]
-    st = by["safe"]["t"]
-    print(f"  [timing] leaky |t|={lt:.1f} (>{THRESHOLD}), safe |t|={st:.1f} (<{THRESHOLD})")
+        print("  [timing] FAIL: synthetic constant-time control falsely flagged"); ok = False
+    print(f"  [timing] leaky |t|={by['leaky-control']['t']:.1f}, safe |t|={by['safe']['t']:.1f}")
+
+    # 3) opt-level sweep: O0/O1 clean, O2/O3 leak
+    levels = {}
+    for lvl, leak in (("O0", False), ("O1", False), ("O2", True), ("O3", True)):
+        c, l = _synth_timing(rng, 20000, leak=leak)
+        p = os.path.join(DEMO, "timing", f"safe_{lvl}.npz")
+        _save_timing(p, c, l, f"safe-{lvl}", "tagcompare")
+        levels[lvl] = p
+    sweep = make_opt_sweep(levels, os.path.join(figs, "opt_sweep.png"),
+                           os.path.join(tbls, "opt_sweep.md"), WATERMARK)
+    sweep_by = {lvl: (t, leak) for lvl, t, leak in sweep}
+    if sweep_by["O0"][1] or not sweep_by["O3"][1]:
+        print("  [sweep]  FAIL: opt-sweep did not separate clean O0 from leaking O3"); ok = False
+    print(f"  [sweep]  O0 |t|={sweep_by['O0'][0]:.1f} (clean), "
+          f"O3 |t|={sweep_by['O3'][0]:.1f} (leaks)")
+
+    # 4) tables: perf_cycles, timing, codesize (from a synthetic size.txt)
+    with open(os.path.join(DEMO, "size.txt"), "w") as f:
+        f.write("   text\t   data\t    bss\t    dec\t    hex\tfilename\n")
+        f.write("  12000\t     16\t   1040\t  13056\t   3300\tfirmware-rust\n")
+        f.write("  10800\t     12\t    900\t  11712\t   2dc0\tfirmware-cref\n")
+        f.write("   9800\t      8\t    820\t  10628\t   2984\tfirmware-pqm4\n")
+    tables_built = _build_from_results(DEMO, tbls)
+    names = {os.path.splitext(os.path.basename(t))[0] for t in tables_built}
+    print(f"  [tables] {sorted(names)}")
+    for need in ("perf_cycles", "timing", "codesize"):
+        if need not in names:
+            print(f"  [tables] FAIL: missing table {need}"); ok = False
 
     print("\n" + ("SELF-TEST PASSED" if ok else "SELF-TEST FAILED"))
-    print("These figures are SYNTHETIC and watermarked. Real results come from "
-          "the bench via make_figures.py.")
+    print(f"Built 6 figures + 4 tables under {DEMO}/ (SYNTHETIC, watermarked). "
+          "Real results come from the bench via make_figures.py.")
     return 0 if ok else 1
 
 

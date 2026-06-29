@@ -88,22 +88,35 @@ Port the timing harness to a second Cortex-M4 (e.g. an STM32F4 "Black Pill" or a
 nRF52840) — only the UART init changes; DWT is identical across M4 parts. Re-run
 step 2 on each board to show the finding is not microarchitecture-specific.
 
-## 5. Build the figures
+## 5. Build the figures and tables
+
+One command builds every artifact for which inputs exist, skipping the rest:
 
 ```sh
-python analysis/make_figures.py     # -> results/figures/{perf,timing}.png
+# optional: code-size table input
+arm-none-eabi-size firmware-*/target/thumbv7em-none-eabihf/release/firmware-* \
+    > results/size.txt
+python analysis/make_figures.py     # -> results/figures/*.png + results/tables/*.{md,tex}
 ```
-It picks up whatever is in `results/` (perf CSVs and/or timing `.npz`) and skips
-the rest, so it works after step 1 alone, step 2 alone, or both.
 
-- F1: cycles/byte, Rust vs C vs asm, across payload sizes (step 1) → `perf.png`.
-- F2: timing-leakage histograms, leaky control vs constant-time DUT (step 2) →
-  `timing.png`.
-- F3: peak |t| vs optimization level (step 3) — one dudect run per opt-level build.
-- F4: (optional) the reboot/nonce-reuse illustration for the protocol section.
+Figures (`results/figures/`):
+- `perf_throughput.png` — cycles/byte vs size, Rust vs C vs asm (step 1)
+- `perf_overhead.png`   — Rust-over-baseline overhead, the cost of memory safety
+- `perf_perm.png`       — p6/p12 permutation cost per implementation
+- `timing.png`          — dudect histograms, leaky control vs constant-time DUT (step 2)
+- `timing_convergence.png` — |t| vs number of traces (statistical rigor)
+- `opt_sweep.png`       — peak |t| vs optimization level (step 3, the headline)
 
-Steps 1–4 produce real artifacts only on the bench. Nothing in this repo
-fabricates them; the synthetic `results/_demo/` figures from `selftest.py` are
-watermarked and never enter `results/figures/`. Power/EM side-channel analysis
-(needs a ChipWhisperer-class rig) is explicitly out of scope and left as future
-work.
+Tables (`results/tables/`, Markdown + LaTeX `\input`-ready):
+- `perf_cycles` — per-size cycle counts + overhead
+- `timing`      — peak |t|, verdict, class means per capture
+- `codesize`    — flash/RAM per build
+- `opt_sweep`   — peak |t| per optimization level
+
+For the opt-sweep figure/table, capture one `results/timing/safe_O{n}.npz` per
+optimization level (rebuild firmware at `-O0..-O3` via `RUSTFLAGS`/Cargo profile).
+
+Everything here is produced only from real bench artifacts. The synthetic
+`results/_demo/` output of `selftest.py` is watermarked and never enters
+`results/figures/` or `results/tables/`. Power/EM side-channel analysis (needs a
+ChipWhisperer-class rig) is out of scope and left as future work.

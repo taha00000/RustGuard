@@ -1,65 +1,79 @@
 #!/usr/bin/env python3
-"""Regenerate every paper figure for which measured inputs exist.
+"""Regenerate every paper figure and table for which measured inputs exist.
 
-This is the single entry point to run after a bench session. It looks in
-`results/` for whatever you have captured and (re)builds the corresponding
-figures into `results/figures/`. Missing inputs are skipped with a note, so the
-same command works whether you have only the perf data, only the timing data, or
-both.
+The single entry point to run after a bench session. It looks in `results/` for
+whatever you captured and (re)builds the corresponding figures into
+`results/figures/` and tables into `results/tables/`. Missing inputs are skipped
+with a note, so the same command works whether you have only perf data, only
+timing data, or the full set.
 
   python analysis/make_figures.py [--results-dir results]
 
 Inputs it looks for
-  results/perf_rust.csv  (+ perf_cref.csv, perf_pqm4.csv)  -> figures/perf.png
-  results/timing/safe.npz (+ timing/leaky.npz)             -> figures/timing.png
+  results/perf_{rust,cref,pqm4}.csv     -> figures/perf_{throughput,overhead,perm}.png
+                                           tables/perf_cycles.{md,tex}
+  results/timing/{safe,leaky}.npz       -> figures/timing.png, timing_convergence.png
+                                           tables/timing.{md,tex}
+  results/timing/safe_O{0..3}.npz       -> figures/opt_sweep.png, tables/opt_sweep.{md,tex}
+  results/size.txt (arm-none-eabi-size) -> tables/codesize.{md,tex}
 
-This script only ever consumes real capture artifacts. To see the pipeline work
-before you have hardware, run analysis/selftest.py instead — it is explicitly
-synthetic and writes watermarked figures to a separate, gitignored directory.
+Only consumes real capture artifacts. To see the pipeline work before hardware,
+run analysis/selftest.py — it is explicitly synthetic and writes watermarked
+output to a separate, gitignored directory.
 """
 from __future__ import annotations
 
 import argparse
+import glob
 import os
+import re
 
 from figutil import read_perf_csv
-from plot_perf import make_perf_figure
-from dudect import make_dudect_figure
+from plot_perf import make_all_perf
+from dudect import make_convergence_figure, make_dudect_figure
+from opt_sweep import make_opt_sweep
+from tables import _build_from_results
 
 
-def build_perf(results_dir: str, fig_dir: str) -> bool:
-    candidates = {
-        "rust": "perf_rust.csv",
-        "cref": "perf_cref.csv",
-        "pqm4": "perf_pqm4.csv",
-    }
+def build_perf(results_dir, fig_dir):
     datasets = {}
-    for name, fname in candidates.items():
-        path = os.path.join(results_dir, fname)
-        if os.path.exists(path):
-            datasets[name] = read_perf_csv(path)
+    for name in ("rust", "cref", "pqm4"):
+        p = os.path.join(results_dir, f"perf_{name}.csv")
+        if os.path.exists(p):
+            datasets[name] = read_perf_csv(p)
     if not datasets:
-        print("[perf]  no perf_*.csv found — skipping "
-              "(run analysis/parse_perf.py on your UART dumps first)")
+        print("[perf]   no perf_*.csv — skipping (run analysis/parse_perf.py first)")
         return False
-    out = make_perf_figure(datasets, os.path.join(fig_dir, "perf.png"))
-    print(f"[perf]  built {out} from: {', '.join(sorted(datasets))}")
+    built = make_all_perf(datasets, fig_dir)
+    print(f"[perf]   {len(built)} figure(s) from: {', '.join(sorted(datasets))}")
     return True
 
 
-def build_timing(results_dir: str, fig_dir: str) -> bool:
+def build_timing(results_dir, fig_dir):
     safe = os.path.join(results_dir, "timing", "safe.npz")
     leaky = os.path.join(results_dir, "timing", "leaky.npz")
     if not os.path.exists(safe):
-        print("[timing] no timing/safe.npz found — skipping "
-              "(run capture/collect_timing.py first)")
+        print("[timing] no timing/safe.npz — skipping (run capture/collect_timing.py)")
         return False
     leaky = leaky if os.path.exists(leaky) else None
     if leaky is None:
-        print("[timing] WARNING: no leaky.npz control — the safe result cannot be "
-              "validated without it. Collecting the leaky control is mandatory.")
+        print("[timing] WARNING: no leaky.npz control — safe result cannot be validated")
     make_dudect_figure(safe, leaky, os.path.join(fig_dir, "timing.png"))
-    print(f"[timing] built {os.path.join(fig_dir, 'timing.png')}")
+    make_convergence_figure(safe, leaky, os.path.join(fig_dir, "timing_convergence.png"))
+    return True
+
+
+def build_opt_sweep(results_dir, fig_dir, tbl_dir):
+    found = {}
+    for p in sorted(glob.glob(os.path.join(results_dir, "timing", "safe_O*.npz"))):
+        m = re.search(r"safe_(O\d)\.npz$", os.path.basename(p))
+        if m:
+            found[m.group(1)] = p
+    if len(found) < 2:
+        print("[sweep]  <2 opt-level captures (timing/safe_O*.npz) — skipping")
+        return False
+    make_opt_sweep(found, os.path.join(fig_dir, "opt_sweep.png"),
+                   os.path.join(tbl_dir, "opt_sweep.md"))
     return True
 
 
@@ -69,16 +83,24 @@ def main():
     ap.add_argument("--results-dir", default="results")
     a = ap.parse_args()
     fig_dir = os.path.join(a.results_dir, "figures")
+    tbl_dir = os.path.join(a.results_dir, "tables")
     os.makedirs(fig_dir, exist_ok=True)
+    os.makedirs(tbl_dir, exist_ok=True)
 
     built = []
     if build_perf(a.results_dir, fig_dir):
         built.append("perf")
     if build_timing(a.results_dir, fig_dir):
         built.append("timing")
+    if build_opt_sweep(a.results_dir, fig_dir, tbl_dir):
+        built.append("opt-sweep")
+
+    tables = _build_from_results(a.results_dir, tbl_dir)
+    if tables:
+        built.append(f"{len({os.path.splitext(os.path.basename(t))[0] for t in tables})} table(s)")
 
     if built:
-        print(f"\nDone. Built: {', '.join(built)} -> {fig_dir}/")
+        print(f"\nDone. Built: {', '.join(built)} -> {fig_dir}/ and {tbl_dir}/")
     else:
         print("\nNo measured inputs found yet. Capture data on the bench, or run "
               "analysis/selftest.py to dry-run the pipeline on synthetic data.")

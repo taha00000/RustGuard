@@ -5,6 +5,9 @@ Cargo.lock
 *.elf
 results/timing/*.npz
 results/figures/*.png
+results/tables/*.md
+results/tables/*.tex
+results/size.txt
 # Synthetic pipeline self-test output — never a real result, never committed.
 results/_demo/
 __pycache__/

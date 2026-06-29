@@ -118,6 +118,52 @@ def make_dudect_figure(safe_npz, leaky_npz=None,
     return results
 
 
+def _t_curve(cyc, lab, points=25):
+    """|t| as a function of the number of traces used — the standard dudect
+    convergence check. A real leak's |t| grows past 4.5 and keeps climbing;
+    constant-time code stays flat and low no matter how many traces you add."""
+    fixed, rand = cyc[lab == 0], cyc[lab == 1]
+    m = min(len(fixed), len(rand))
+    ns = np.unique(np.linspace(50, m, points).astype(int))
+    xs, ys = [], []
+    for n in ns:
+        t = welch_scalar(fixed[:n], rand[:n])
+        xs.append(2 * n)  # total traces (fixed + random)
+        ys.append(min(abs(t), 1e3) if np.isfinite(t) else 1e3)
+    return np.array(xs), np.array(ys)
+
+
+def make_convergence_figure(safe_npz, leaky_npz=None,
+                            plot="results/figures/timing_convergence.png",
+                            watermark_text=None):
+    """|t| vs number of traces, for the constant-time DUT and the leaky control."""
+    if plt is None:
+        return plot
+    fig, ax = plt.subplots(figsize=(6.5, 4.2))
+    cyc, lab, _v, _e = load(safe_npz)
+    xs, ys = _t_curve(cyc, lab)
+    ax.plot(xs, ys, color="C0", label="constant-time DUT")
+    if leaky_npz:
+        lc, ll, _v2, _e2 = load(leaky_npz)
+        lx, ly = _t_curve(lc, ll)
+        ax.plot(lx, ly, color="C3", label="leaky control")
+    ax.axhline(THRESHOLD, color="r", ls="--", lw=0.8, label=f"threshold {THRESHOLD}")
+    ax.set_xlabel("traces")
+    ax.set_ylabel("|t|")
+    ax.set_yscale("log")
+    ax.set_title("Timing-leakage t-statistic vs number of traces")
+    ax.grid(True, which="both", ls=":", alpha=0.5)
+    ax.legend()
+    watermark(fig, watermark_text)
+    fig.tight_layout()
+    import os
+    os.makedirs(os.path.dirname(plot) or ".", exist_ok=True)
+    fig.savefig(plot, dpi=150)
+    plt.close(fig)
+    print(f"figure -> {plot}")
+    return plot
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)

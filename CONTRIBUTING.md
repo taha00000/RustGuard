@@ -56,4 +56,4 @@ cd firmware-tm4c && cargo check --release --features "timing leaky"
 - Boolean masking for second-order resistance
 - (future, needs a capture rig) power/EM side-channel analysis
 
-See `docs/CLAUDE_CODE_HANDOFF.md` for current project state and the task list.
+See `docs/STATUS.md` for current project state and what is verified.

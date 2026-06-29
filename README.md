@@ -58,8 +58,14 @@ board, and fully reproducible.
 | `rustguard-pap` | reboot-robust packet authentication protocol |
 | `firmware-tm4c` | perf benchmark (default) and dudect timing harness (`--features timing`) |
 | `capture` | `collect_timing.py` — drives the timing harness over UART |
-| `analysis` | `parse_perf`, `plot_perf`, `dudect` (Welch t-test + histograms), `make_figures`, `selftest` |
-| `docs` | protocol security, hardware setup, BOM, experiment runbook |
+| `analysis` | `parse_perf`, `plot_perf`, `dudect`, `opt_sweep`, `tables`, `make_figures`, `selftest` |
+| `docs` | protocol security, hardware setup, BOM, experiment runbook, status |
+
+`make_figures.py` produces **6 figures** (throughput, memory-safety overhead,
+permutation cost, timing histograms, t-statistic convergence, optimization-level
+sweep) and **4 tables** (cycle counts, timing summary, code size, opt sweep) as
+Markdown + LaTeX. `selftest.py` builds and checks all of them on synthetic,
+watermarked data so the pipeline is verifiable before any hardware arrives.
 
 ## Quick start (host, no hardware)
 
@@ -75,9 +81,8 @@ numbers — those are produced on the bench, by design.
 
 ## Status
 
-Active research, redirected from an earlier implementation-only draft, and scoped
-to hardware you can validate on a single Cortex-M4. See
-`docs/CLAUDE_CODE_HANDOFF.md` for current state and task list.
+Active research, scoped to hardware you can validate on a single Cortex-M4. See
+`docs/STATUS.md` for current state, what is verified, and what needs the bench.
 
 ## License
 

@@ -25,14 +25,18 @@
 #![forbid(unsafe_code)]
 
 use subtle::ConstantTimeEq;
+#[cfg(not(kani))]
 use zeroize::Zeroize;
 
 // ── State ─────────────────────────────────────────────────────────────────────
 
 /// The 320-bit ASCON permutation state as five 64-bit words.
 /// `Zeroize` + `#[zeroize(drop)]` guarantees key material is erased on drop.
-#[derive(Clone, Zeroize)]
-#[zeroize(drop)]
+/// (Under `cfg(kani)` the zeroize-on-drop is dropped, because Kani cannot model
+/// zeroize's inline-asm optimization barrier; this does not affect the functional
+/// or safety properties being proven.)
+#[derive(Clone)]
+#[cfg_attr(not(kani), derive(Zeroize), zeroize(drop))]
 pub struct State {
     pub x0: u64,
     pub x1: u64,
@@ -134,6 +138,20 @@ fn store64be(dst: &mut [u8], v: u64) {
     dst[..8].copy_from_slice(&v.to_be_bytes());
 }
 
+/// Zero a buffer. Uses `zeroize` in normal builds; under Kani (which cannot model
+/// zeroize's inline-asm optimization barrier) it uses a plain, semantically
+/// identical loop so the cipher logic can still be model-checked. Production
+/// builds are unaffected.
+#[inline(always)]
+fn wipe(buf: &mut [u8]) {
+    #[cfg(not(kani))]
+    buf.zeroize();
+    #[cfg(kani)]
+    for b in buf.iter_mut() {
+        *b = 0;
+    }
+}
+
 // ── ASCON-128 AEAD Encrypt ────────────────────────────────────────────────────
 
 /// ASCON-128 authenticated encryption.
@@ -223,7 +241,7 @@ pub fn ascon_aead_decrypt(
     // Constant-time comparison: no secret-dependent branch, no early return.
     let ok = bool::from(tag.ct_eq(&expected));
     if !ok {
-        plaintext.zeroize();
+        wipe(plaintext);
     }
     ok
 }
@@ -254,7 +272,7 @@ pub fn ascon_aead_decrypt_variabletime(
         }
     }
     if !ok {
-        plaintext.zeroize();
+        wipe(plaintext);
     }
     ok
 }
@@ -368,3 +386,7 @@ pub enum AsconError {
     AuthenticationFailed,
     BufferTooSmall,
 }
+
+// Machine-checked proof harnesses (compiled only under `cargo kani`).
+#[cfg(kani)]
+mod kani_proofs;

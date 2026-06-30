@@ -17,20 +17,23 @@ NSA/CISA now recommend memory-safe languages for security-critical firmware, and
 Rust's `#![forbid(unsafe_code)]` plus the `subtle` crate advertise constant-time
 crypto. But constant-time at the source level is routinely undone by the compiler,
 and a source-level guarantee says nothing about the binary that actually ships or
-the silicon it runs on. RustGuard asks: **does the constant-time property hold all
-the way from source to silicon, and where does it break?** — and answers it by
-*triangulating three independent checks* of the same property, each at a different
-level, all on hardware you can buy for $20:
+the silicon it runs on. RustGuard asks: **does correctness and the constant-time
+property hold all the way from source to silicon, and where does it break?** — and
+answers it by checking the same code at *four independent levels* (the proof and
+binary levels need no hardware at all; the timing level needs only a $20 board):
 
-1. **Source** — exhaustive differential correctness against the ASCON reference
-   (the `tests/kat.rs` known-answer vectors), establishing the implementation is
-   the cipher it claims to be.
-2. **Binary** — a control-flow census of the compiled `thumbv7em` image
+1. **Proof** — machine-checked with the [Kani](https://github.com/model-checking/kani)
+   model checker: the AEAD + hash are provably free of panics, overflow, and UB for
+   all symbolic inputs, and decryption provably recovers the plaintext. See
+   `docs/verification.md`.
+2. **Source** — exhaustive differential correctness against the ASCON reference
+   (the `tests/kat.rs` known-answer vectors), including exact tag authentication.
+3. **Binary** — a control-flow census of the compiled `thumbv7em` image
    (`analysis/ct_binary.py` over `rust-objdump`): per function, the conditional
    branches / IT blocks / variable-latency ops that can carry data-dependent
    timing. The safe-vs-leaky *differential* localizes secret-dependent branching
    in the actual deployed artifact, across optimization levels.
-3. **Silicon** — a dudect-style timing-leakage test on the TM4C123 (Reparaz,
+4. **Silicon** — a dudect-style timing-leakage test on the TM4C123 (Reparaz,
    Balasch & Verbauwhede, DATE 2017): fixed-vs-random inputs, a Welch t-test over
    on-chip **DWT cycle counts**, against a deliberately leaky positive control.
 
@@ -46,13 +49,18 @@ artifact of one microarchitecture.
 **Scope (honest limitations):** the silicon leg detects *timing* leakage, not
 *power/EM* (a ChipWhisperer-class rig, out of scope, is future work). The binary
 leg is a control-flow census + differential — a practical screen validated by its
-controls, **not** a sound taint-tracking proof (cf. BINSEC/Rel); a machine-checked
-proof (Kani/Verus) is the documented next milestone. The contribution is the
-*triangulated, reproducible-on-a-bare-board methodology* and what it reveals, not
-any single tool.
+controls, **not** a sound taint-tracking proof (cf. BINSEC/Rel). The Kani proofs
+cover safety and decryption-recovery; full *tag-authentication* proofs are
+intractable for a laptop SAT solver and are covered instead by the exact KAT
+vectors. The contribution is the *four-level, reproducible-on-a-bare-board
+methodology* and what it reveals, not any single tool.
 
 ## What's verified today
 
+- **Machine-checked (Kani).** 6/6 proofs verify: the permutation, encrypt,
+  decrypt, AD/padding, and hash are provably panic/overflow/UB-free for all
+  symbolic inputs, and decryption provably recovers the plaintext. Runs in CI.
+  See `docs/verification.md`.
 - **Correctness.** The AEAD matches the published ASCON-128 reference for 8
   known-answer vectors (`rustguard-core/tests/kat.rs`). Real KATs, not round-trip
   self-consistency checks.

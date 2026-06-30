@@ -24,6 +24,13 @@ work end-to-end. It writes **watermarked, synthetic** figures to `results/_demo/
 (gitignored) — a pipeline check, never a result. See `docs/hardware_bom.md` for
 exactly what to buy.
 
+Optionally, run the machine-checked proofs (needs Kani; see `docs/verification.md`):
+
+```sh
+cargo install --locked kani-verifier && cargo kani setup   # one-time
+cargo kani -p rustguard-core                                # 6/6 proofs
+```
+
 ## 1. Performance: Rust vs C/asm on TM4C [BENCH]
 
 ```sh

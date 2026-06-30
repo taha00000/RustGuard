@@ -60,3 +60,12 @@ jobs:
         run: python -m pytest analysis/tests -q
       - name: Pipeline self-test (synthetic, end-to-end)
         run: python analysis/selftest.py
+
+  proofs:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Kani model-checking (functional correctness + safety)
+        uses: model-checking/kani-github-action@v1
+        with:
+          args: "-p rustguard-core"

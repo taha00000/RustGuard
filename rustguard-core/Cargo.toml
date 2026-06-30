@@ -15,3 +15,13 @@ default = []
 # Compiles an intentionally variable-time tag check used ONLY as a TVLA
 # positive control. Never enable in production.
 tvla-leaky-control = []
+
+# Enables the fully-symbolic-key Kani proof harnesses (correct by construction
+# but impractical for a SAT solver on commodity hardware). Off by default so the
+# proof suite stays reliable; see docs/verification.md.
+kani-deep = []
+
+# `cfg(kani)` is set by the Kani model checker; declare it so normal builds don't
+# warn about an unexpected cfg.
+[lints.rust]
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(kani)'] }

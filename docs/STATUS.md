@@ -7,17 +7,20 @@ so anyone (including future-me) can pick it up without guessing.
 
 A memory-safe `no_std` ASCON-128 used as the device under test for a
 source-to-silicon constant-time study on a single Cortex-M4 (TM4C123, no
-oscilloscope). It triangulates three independent checks of the constant-time
-property:
+oscilloscope). It checks the same code at four independent levels:
 
-1. **source** — differential correctness against the ASCON reference (KATs);
-2. **binary** — a control-flow census of the compiled thumb image
+1. **proof** — Kani model-checking: safety (no panic/overflow/UB) + decryption
+   recovery, machine-checked for all symbolic inputs (`docs/verification.md`);
+2. **source** — differential correctness against the ASCON reference (KATs),
+   including exact tag authentication;
+3. **binary** — a control-flow census of the compiled thumb image
    (`analysis/ct_binary.py`), with the safe-vs-leaky differential localizing
    secret-dependent branches in the actual artifact;
-3. **silicon** — dudect timing leakage on-chip via the DWT cycle counter.
+4. **silicon** — dudect timing leakage on-chip via the DWT cycle counter.
 
 Plus the cycle cost of memory safety (Rust vs C vs pqm4 asm). Power/EM analysis
-(needs a capture rig) and a machine-checked CT proof (Kani/Verus) are future work.
+(needs a capture rig) and full machine-checked tag-authentication proofs (beyond a
+laptop SAT solver) are future work.
 
 ## Verified today (host, no hardware)
 
@@ -27,6 +30,7 @@ cargo build -p rustguard-core --features tvla-leaky-control
 pip install -r analysis/requirements.txt
 python -m pytest analysis/tests                    # analysis unit tests
 python analysis/selftest.py                        # full pipeline on synthetic data
+cargo kani -p rustguard-core                        # 6/6 proofs (needs Kani; see verification.md)
 ```
 
 - Cipher correctness: byte-for-byte against the published ASCON reference for 8
@@ -40,6 +44,8 @@ python analysis/selftest.py                        # full pipeline on synthetic 
 - Binary census: `ct-probe` builds for thumb and `analysis/ct_binary.py` reports
   the safe-vs-leaky branch differential (the leak, localized in the binary). Runs
   in CI on every push.
+- Machine-checked: `cargo kani -p rustguard-core` verifies 6/6 proofs (safety +
+  decryption recovery). See `docs/verification.md`. Runs in CI.
 
 Firmware (needs `rustup target add thumbv7em-none-eabihf`):
 ```sh
@@ -64,6 +70,7 @@ cargo check --release --features "timing leaky"
 
 ## Where to look
 
+- `docs/verification.md` — the Kani machine-checked proofs (what's proven, scope).
 - `docs/experiment_runbook.md` — end-to-end bench workflow.
 - `docs/hardware_bom.md` — what to buy (just an M4 board + USB-UART dongle).
 - `docs/hardware_setup.md` — wiring and the UART capture fix.

@@ -71,6 +71,7 @@ cargo check --release --features "timing leaky"
 ## Where to look
 
 - `docs/verification.md` — the Kani machine-checked proofs (what's proven, scope).
+- `docs/flashing.md` — one-command build+flash (`scripts/flash.ps1`, LM Flash Programmer).
 - `docs/experiment_runbook.md` — end-to-end bench workflow.
 - `docs/hardware_bom.md` — what to buy (just an M4 board + USB-UART dongle).
 - `docs/hardware_setup.md` — wiring and the UART capture fix.

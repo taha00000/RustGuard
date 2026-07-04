@@ -73,7 +73,21 @@ def collect(cfg):
     _wait_ready(ser)
     rng = np.random.default_rng(cfg.seed)
 
-    correct_tag = _get_correct_tag(ser, FIXED_KEY) if cfg.experiment == "tagcompare" else None
+    # dudect tag-compare design. Both classes present a *wrong* tag, so both reject
+    # and both run the wipe-on-failure path -- that cancels out, leaving the tag
+    # COMPARISON as the only variable. They differ in how long a prefix matches the
+    # device's expected tag:
+    #   fixed class : the correct tag with its LAST byte flipped -> matches a
+    #                 15-byte prefix, so an early-return compare runs nearly the
+    #                 full loop (slow); a constant-time compare is unchanged.
+    #   random class: random tags -> mismatch almost immediately (fast for an
+    #                 early-return compare).
+    # Constant-time compare  => both classes identical  (no leak, |t| ~ 0).
+    # Early-return compare    => fixed much slower than random (leak, |t| >> 4.5).
+    fixed_tag = None
+    if cfg.experiment == "tagcompare":
+        correct = _get_correct_tag(ser, FIXED_KEY)
+        fixed_tag = bytes(correct[:15]) + bytes([correct[15] ^ 0xFF])
 
     cycles = np.empty(cfg.n, dtype=np.uint32)
     labels = np.empty(cfg.n, dtype=np.uint8)
@@ -87,7 +101,7 @@ def collect(cfg):
                 key, pt = FIXED_KEY, FIXED_PT
             c = _cyc(ser, b"e", key, pt)
         else:  # tagcompare
-            tag = bytes(rng.integers(0, 256, 16, dtype=np.uint8)) if is_random else correct_tag
+            tag = bytes(rng.integers(0, 256, 16, dtype=np.uint8)) if is_random else fixed_tag
             c = _cyc(ser, b"v", FIXED_KEY, tag)
         cycles[i] = c
         labels[i] = 1 if is_random else 0

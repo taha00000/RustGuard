@@ -115,6 +115,9 @@ fn run(u: &mut Uart) -> ! {
     const WARMUP: u32 = 50;
     const ITERS: u32 = 500;
 
+    // Stream the whole benchmark repeatedly so a serial listener always catches
+    // a full cycle without needing to reset the board at the right instant.
+    loop {
     let _ = writeln!(u, "# RustGuard TM4C123 perf benchmark (real DWT)");
     let _ = writeln!(u, "# 16 MHz, opt-level=3, lto=true. {} iters, {} warmup", ITERS, WARMUP);
 
@@ -168,8 +171,10 @@ fn run(u: &mut Uart) -> ! {
     }
 
     let _ = writeln!(u, "SECTION:DONE");
-    loop {
-        cortex_m::asm::wfi();
+    // ~1 s gap, then stream the whole benchmark again.
+    for _ in 0..6_000_000u32 {
+        cortex_m::asm::nop();
+    }
     }
 }
 

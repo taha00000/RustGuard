@@ -25,6 +25,11 @@ jobs:
           cargo check --release
           cargo check --release --features timing
           cargo check --release --features "timing leaky"
+      - name: cargo check firmware (STM32F303 timing: safe + leaky)
+        working-directory: firmware-stm32-timing
+        run: |
+          cargo check --release
+          cargo check --release --features leaky
 
   binary-ct:
     runs-on: ubuntu-latest

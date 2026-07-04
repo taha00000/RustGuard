@@ -5,7 +5,7 @@ members = ["rustguard-core", "rustguard-pap"]
 # workspace (it needs thumbv7em-none-eabihf / its own .cargo/config). It must be
 # listed in `exclude`, otherwise cargo auto-claims it as a workspace member (it
 # lives under the workspace root) and refuses to build it standalone.
-exclude = ["firmware-tm4c", "ct-probe"]
+exclude = ["firmware-tm4c", "firmware-stm32-timing", "ct-probe"]
 
 [workspace.package]
 edition = "2021"

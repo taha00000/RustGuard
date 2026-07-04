@@ -1,0 +1,13 @@
+\begin{table}[t]
+  \centering
+  \caption{Timing-leakage assessment (dudect, |t|>4.5 = leak).}
+  \label{tab:timing}
+  \begin{tabular}{llllll}
+    \toprule
+    capture & experiment & peak |t| & verdict & fixed mean & random mean \\
+    \midrule
+    safe & tagcompare & 0.00 & constant-time & 6131.0 & 6131.0 \\
+    leaky & tagcompare & 6621.91 & LEAKS & 5643.0 & 5570.0 \\
+    \bottomrule
+  \end{tabular}
+\end{table}

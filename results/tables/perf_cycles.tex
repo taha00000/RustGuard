@@ -1,0 +1,18 @@
+\begin{table}[t]
+  \centering
+  \caption{ASCON-128 encrypt cycle counts on the TM4C123 (same board and toolchain).}
+  \label{tab:perf}
+  \begin{tabular}{llll}
+    \toprule
+    bytes & Rust cyc & Rust cyc/B & overhead vs best \\
+    \midrule
+    8 & 4857 & 607.12 & - \\
+    16 & 5790 & 361.88 & - \\
+    32 & 7656 & 239.25 & - \\
+    64 & 11388 & 177.94 & - \\
+    128 & 18852 & 147.28 & - \\
+    256 & 33780 & 131.95 & - \\
+    512 & 63636 & 124.29 & - \\
+    \bottomrule
+  \end{tabular}
+\end{table}

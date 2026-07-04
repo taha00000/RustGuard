@@ -1,0 +1,16 @@
+\begin{table}[t]
+  \centering
+  \caption{Control-flow census of the compiled thumbv7em crypto (constant-time vs variable-time decrypt).}
+  \label{tab:ctbinary}
+  \begin{tabular}{llll}
+    \toprule
+    function & cond branches & IT blocks & udiv/sdiv \\
+    \midrule
+    decrypt (constant-time) & 7 & 2 & 0 \\
+    decrypt (variable-time, leaky) & 22 & 1 & 0 \\
+    decrypt core (permutation) & 4 & 2 & 0 \\
+    encrypt & 0 & 0 & 0 \\
+    permutation p & 0 & 1 & 0 \\
+    \bottomrule
+  \end{tabular}
+\end{table}

@@ -1,9 +1,9 @@
-#!/usr/bin/env python3
-"""End-to-end pipeline self-test on SYNTHETIC data — no hardware required.
+﻿#!/usr/bin/env python3
+"""End-to-end pipeline self-test on SYNTHETIC data â€” no hardware required.
 
 This does NOT produce research results. It fabricates obviously-synthetic inputs
-and runs them through the exact same code paths the bench uses — every figure and
-every table generator — so you can confirm the whole chain works before the
+and runs them through the exact same code paths the bench uses â€” every figure and
+every table generator â€” so you can confirm the whole chain works before the
 hardware arrives. Everything it writes goes to a gitignored directory
 (`results/_demo/`) and every figure carries a red SYNTHETIC watermark.
 
@@ -30,6 +30,7 @@ from dudect import THRESHOLD, make_convergence_figure, make_dudect_figure
 from opt_sweep import make_opt_sweep
 from tables import _build_from_results
 from ct_binary import census_disasm, differential, report as ct_report
+from matrix import make_matrix
 from figutil import ensure_parent, read_perf_csv
 
 # A synthetic disassembly (rust-objdump format) standing in for the compiled
@@ -178,11 +179,41 @@ def main() -> int:
         print(f"  [binary] constant-time={diff[0]} cond, variable-time={diff[1]} cond, "
               f"extra={diff[2]} (leak localized)")
 
+    # 6) ecosystem leakage matrix: many primitives x boards x opt levels
+    eco_dir = os.path.join(DEMO, "eco_timing")
+    prims = ["aes-gcm", "chacha20poly1305", "hmac-sha256", "ascon-aead",
+             "LEAKY-control"]
+    for board in ("tm4c", "stm32"):
+        for opt in ("O0", "O3"):
+            for p in prims:
+                leak = p == "LEAKY-control"
+                c, l = _synth_timing(rng, 2000, leak=leak)
+                path = os.path.join(eco_dir, f"{board}_{opt}_{p}.npz")
+                ensure_parent(path)
+                np.savez_compressed(path, cycles=c, labels=l, variant=p,
+                                    experiment="verify", probe=p,
+                                    board=board, opt=opt)
+    cells = make_matrix(eco_dir, os.path.join(figs, "leakage_matrix.png"),
+                        os.path.join(tbls, "leakage_matrix.md"), WATERMARK)
+    if not cells:
+        print("  [matrix] FAIL: no cells built"); ok = False
+    else:
+        leaky_cells = [c for c in cells.get("LEAKY-control", {}).values() if c[1]]
+        clean_ok = all(not v[1] for p in cells if p != "LEAKY-control"
+                       for v in cells[p].values())
+        if len(leaky_cells) != 4:
+            print("  [matrix] FAIL: leaky control not flagged in all 4 configs"); ok = False
+        if not clean_ok:
+            print("  [matrix] FAIL: a constant-time primitive was falsely flagged"); ok = False
+        print(f"  [matrix] {len(cells)} primitives x 4 configs; "
+              f"leaky flagged in {len(leaky_cells)}/4, others clean={clean_ok}")
+
     print("\n" + ("SELF-TEST PASSED" if ok else "SELF-TEST FAILED"))
-    print(f"Built 7 figures + 5 tables under {DEMO}/ (SYNTHETIC, watermarked). "
+    print(f"Built 8 figures + 6 tables under {DEMO}/ (SYNTHETIC, watermarked). "
           "Real results come from the bench via make_figures.py + ct_binary.py.")
     return 0 if ok else 1
 
 
 if __name__ == "__main__":
     sys.exit(main())
+

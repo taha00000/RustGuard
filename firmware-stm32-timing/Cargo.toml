@@ -1,4 +1,4 @@
-[package]
+﻿[package]
 name = "firmware-stm32-timing"
 version = "0.2.0"
 edition = "2021"
@@ -8,7 +8,7 @@ edition = "2021"
 # the UART/clock bring-up is STM32-specific. Runs on the STM32F3 Discovery.
 
 [dependencies]
-rustguard-core = { path = "../rustguard-core" }
+probes = { path = "../probes" }
 cortex-m = "0.7"
 cortex-m-rt = "0.7"
 panic-halt = "0.2"
@@ -16,10 +16,11 @@ panic-halt = "0.2"
 [features]
 default = []
 # Links the variable-time tag check as the timing-leakage positive control.
-leaky = ["rustguard-core/tvla-leaky-control"]
+leaky = ["probes/leaky-control"]
 
 [profile.release]
 opt-level = 3
 lto = true
 codegen-units = 1
 debug = true
+

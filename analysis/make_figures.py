@@ -34,6 +34,7 @@ from dudect import make_convergence_figure, make_dudect_figure
 from opt_sweep import make_opt_sweep
 from tables import _build_from_results
 from ct_binary import census_disasm, disassemble, report as ct_report
+from matrix import make_matrix
 
 
 def build_perf(results_dir, fig_dir):
@@ -119,6 +120,11 @@ def main():
         built.append("perf")
     if build_timing(a.results_dir, fig_dir):
         built.append("timing")
+    # Ecosystem leakage matrix — the headline artifact of the systematic study.
+    if make_matrix(os.path.join(a.results_dir, "timing"),
+                   os.path.join(fig_dir, "leakage_matrix.png"),
+                   os.path.join(tbl_dir, "leakage_matrix.md")):
+        built.append("leakage-matrix")
     if build_ct_binary(a.results_dir, fig_dir, tbl_dir):
         built.append("ct-binary")
     if build_opt_sweep(a.results_dir, fig_dir, tbl_dir):

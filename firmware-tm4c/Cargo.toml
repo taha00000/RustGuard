@@ -5,17 +5,20 @@ edition = "2021"
 
 [dependencies]
 rustguard-core = { path = "../rustguard-core" }
+# Multi-primitive registry; only linked into the timing build so the perf image
+# stays small.
+probes = { path = "../probes", optional = true }
 cortex-m = "0.7"
 cortex-m-rt = "0.7"
 panic-halt = "0.2"
 
 [features]
 default = []
-# dudect-style timing-leakage harness instead of the perf benchmark.
-timing = []
-# Links the variable-time tag check as the timing-leakage positive control.
+# dudect-style multi-primitive timing-leakage harness instead of the perf benchmark.
+timing = ["dep:probes"]
+# Adds the deliberately variable-time control (probe id 99) to the registry.
 # Only meaningful together with `timing`.
-leaky = ["rustguard-core/tvla-leaky-control"]
+leaky = ["probes/leaky-control", "rustguard-core/tvla-leaky-control"]
 
 [profile.release]
 opt-level = 3

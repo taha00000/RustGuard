@@ -3,6 +3,21 @@
 What this repo is, what is verified, and what still needs the bench. Kept current
 so anyone (including future-me) can pick it up without guessing.
 
+## Current scope (systematic ecosystem study)
+
+Ten AEAD/MAC implementations from the Rust crypto ecosystem are evaluated for
+timing leakage on real Cortex-M4 silicon, across four optimization levels and two
+silicon vendors, with no lab equipment. The registry lives in `probes/`; adding a
+crate means adding one entry there — the firmware, capture driver, and analysis
+are generic. `results/figures/leakage_matrix.png` is the headline artifact.
+
+The in-house ASCON is retained as the *validated control pair* (constant-time vs
+deliberately variable-time), which is what proves the method detects a real leak
+on this hardware. It is no longer presented as a performance contribution — its
+124 cycles/byte is not competitive with optimized ASCON on Cortex-M4, and the C
+baseline that claim would need was removed (it was built on the incorrect premise
+that pqm4 ships ASCON; it does not).
+
 ## What it is
 
 A memory-safe `no_std` ASCON-128 used as the device under test for a

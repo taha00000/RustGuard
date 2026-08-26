@@ -181,18 +181,19 @@ fn run(u: &mut Uart) -> ! {
 // ─────────────────────────────────────────────────────────────────────────────
 // Mode B: dudect-style timing-leakage harness (`--features timing`)
 // ─────────────────────────────────────────────────────────────────────────────
+// Multi-primitive dispatch. One image carries every probe in the `probes`
+// registry; the host selects one at runtime, so a whole ecosystem sweep needs a
+// handful of flash cycles instead of one per crate.
+//
+// Protocol (ASCII, hex payloads):
+//   l              list probes      -> "p <id> <taglen> <name>" lines, then "endp"
+//   s<2 hex>       select probe     -> "ok <taglen>" | "err"
+//   g              genuine tag      -> "tag <hex>"
+//   v<taglen*2>    verify timing    -> "cyc <n>"
 #[cfg(feature = "timing")]
 fn run(u: &mut Uart) -> ! {
     use core::hint::black_box;
-    use rustguard_core::ascon_aead_encrypt;
-    #[cfg(not(feature = "leaky"))]
-    use rustguard_core::ascon_aead_decrypt as aead_decrypt;
-    #[cfg(feature = "leaky")]
-    use rustguard_core::ascon_aead_decrypt_variabletime as aead_decrypt;
-
-    const NONCE: [u8; 16] = [0x00; 16];
-    const AD: [u8; 0] = [];
-    const FIXED_PT: [u8; 16] = [0x00; 16];
+    use probes::{Probe, MAX_TAG, PROBES};
 
     fn hexval(c: u8) -> u8 {
         match c {
@@ -206,14 +207,12 @@ fn run(u: &mut Uart) -> ! {
         while rd(UART0_FR) & (1 << 4) != 0 {} // RXFE (receive FIFO empty)
         rd(UART0_DR) as u8
     }
-    fn read_hex_16() -> [u8; 16] {
-        let mut out = [0u8; 16];
-        for byte in out.iter_mut() {
+    fn read_hex(n: usize, out: &mut [u8]) {
+        for byte in out.iter_mut().take(n) {
             let hi = hexval(getc());
             let lo = hexval(getc());
             *byte = (hi << 4) | lo;
         }
-        out
     }
     fn send_hex(u: &mut Uart, bytes: &[u8]) {
         const LUT: &[u8; 16] = b"0123456789abcdef";
@@ -227,71 +226,59 @@ fn run(u: &mut Uart) -> ! {
         }
     }
 
-    // Encrypt timing: vary the key (or plaintext) class; constant-time => no leak.
-    fn measure_encrypt(key: &[u8; 16], pt: &[u8; 16]) -> u32 {
-        let mut ct = [0u8; 16];
-        let mut tag = [0u8; 16];
+    /// Time the selected crate's own verification. Interrupts are masked and the
+    /// tag is passed through `black_box` so the compiler cannot hoist or fold the
+    /// comparison out of the measured region.
+    fn measure_verify(p: &Probe, tag: &[u8]) -> u32 {
         cortex_m::interrupt::free(|_| {
             let s = cyccnt();
-            ascon_aead_encrypt(black_box(key), &NONCE, &AD, black_box(&pt[..]), &mut ct, &mut tag);
+            let ok = (p.verify)(black_box(tag));
             let e = cyccnt();
-            let _ = black_box(&ct);
-            let _ = black_box(&tag);
-            e.wrapping_sub(s)
-        })
-    }
-
-    // Decrypt timing: the tag-compare experiment. Recompute a valid ct from the
-    // key, then time aead_decrypt against the host-supplied tag. Constant-time
-    // compare => identical timing for matching vs mismatching tags; the leaky
-    // control returns early on first mismatch => the random-tag class is faster.
-    fn measure_decrypt(key: &[u8; 16], tag: &[u8; 16]) -> u32 {
-        let mut ct = [0u8; 16];
-        let mut real_tag = [0u8; 16];
-        ascon_aead_encrypt(key, &NONCE, &AD, &FIXED_PT, &mut ct, &mut real_tag);
-        let mut rec = [0u8; 16];
-        cortex_m::interrupt::free(|_| {
-            let s = cyccnt();
-            let ok = aead_decrypt(black_box(key), &NONCE, &AD, black_box(&ct[..]), &mut rec, black_box(tag));
-            let e = cyccnt();
-            let _ = black_box(&rec);
             let _ = black_box(ok);
             e.wrapping_sub(s)
         })
     }
 
-    fn correct_tag(key: &[u8; 16]) -> [u8; 16] {
-        let mut ct = [0u8; 16];
-        let mut tag = [0u8; 16];
-        ascon_aead_encrypt(key, &NONCE, &AD, &FIXED_PT, &mut ct, &mut tag);
-        tag
-    }
-
-    let variant = if cfg!(feature = "leaky") { "leaky" } else { "safe" };
-    let _ = writeln!(u, "# RustGuard TM4C123 timing harness ({})", variant);
-    let _ = writeln!(u, "# cmds: e=enc-timing v=dec-timing g=get-tag. reply 'cyc <n>'");
+    let _ = writeln!(u, "# RustGuard multi-primitive timing harness (TM4C123)");
+    let _ = writeln!(u, "# cmds: l=list s<id>=select g=get-tag v<tag>=verify-timing");
+    let _ = writeln!(u, "# probes: {}", PROBES.len());
     let _ = writeln!(u, "READY");
+
+    let mut sel: &'static Probe = &PROBES[0];
 
     loop {
         match getc() {
-            b'e' => {
-                let key = read_hex_16();
-                let pt = read_hex_16();
-                let c = measure_encrypt(&key, &pt);
-                let _ = writeln!(u, "cyc {}", c);
+            b'l' => {
+                for p in PROBES {
+                    let _ = writeln!(u, "p {} {} {}", p.id, p.tag_len, p.name);
+                }
+                let _ = writeln!(u, "endp");
             }
-            b'v' => {
-                let key = read_hex_16();
-                let tag = read_hex_16();
-                let c = measure_decrypt(&key, &tag);
-                let _ = writeln!(u, "cyc {}", c);
+            b's' => {
+                let mut idb = [0u8; 1];
+                read_hex(1, &mut idb);
+                match probes::find(idb[0]) {
+                    Some(p) => {
+                        sel = p;
+                        let _ = writeln!(u, "ok {}", p.tag_len);
+                    }
+                    None => {
+                        let _ = writeln!(u, "err");
+                    }
+                }
             }
             b'g' => {
-                let key = read_hex_16();
-                let t = correct_tag(&key);
+                let mut buf = [0u8; MAX_TAG];
+                let n = (sel.correct_tag)(&mut buf);
                 let _ = u.write_str("tag ");
-                send_hex(u, &t);
+                send_hex(u, &buf[..n]);
                 let _ = writeln!(u);
+            }
+            b'v' => {
+                let mut tag = [0u8; MAX_TAG];
+                read_hex(sel.tag_len, &mut tag);
+                let c = measure_verify(sel, &tag[..sel.tag_len]);
+                let _ = writeln!(u, "cyc {}", c);
             }
             _ => {}
         }

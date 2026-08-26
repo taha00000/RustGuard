@@ -11,6 +11,23 @@ performance are measured on a real Cortex-M4, using only the ARM core's built-in
 cycle counter — **no oscilloscope or ChipWhisperer required**, so anyone with the
 same dev board can reproduce the result.
 
+## The study
+
+**A systematic, equipment-free constant-time evaluation of the Rust cryptographic
+ecosystem on embedded targets.** Ten AEAD/MAC implementations — `aes-gcm`,
+`aes-gcm-siv`, `chacha20poly1305`, `ascon-aead`, `eax`, `ccm`, `hmac-sha256`,
+`cmac-aes128`, plus a verified in-house ASCON and a deliberately variable-time
+control — are measured on real Cortex-M4 silicon across four optimization levels
+and two silicon vendors, using nothing but a $20 dev board and its own cycle
+counter.
+
+**Why verification paths.** A Cortex-M4 has no cache, so the classic cache-timing
+leak classes (AES T-tables, GHASH tables) do not manifest — a table lookup costs
+the same regardless of index. What *does* leak on M4 is (1) secret-dependent
+branches, (2) variable-latency arithmetic (`UDIV`/`SDIV` are 2–12 cycles), and
+(3) early-return comparisons. Tag/MAC verification is where all three converge,
+so every probe measures the crate's own verification path.
+
 ## Research question
 
 NSA/CISA now recommend memory-safe languages for security-critical firmware, and
@@ -84,11 +101,13 @@ methodology* and what it reveals, not any single tool.
 |---|---|
 | `rustguard-core` | ASCON-128 AEAD + ASCON-HASH, `no_std`, verified KATs |
 | `rustguard-pap` | reboot-robust packet authentication protocol |
-| `firmware-tm4c` | perf benchmark (default) and dudect timing harness (`--features timing`) |
+| `probes` | the primitive registry — every crate under evaluation behind one interface |
+| `firmware-tm4c` | perf benchmark (default) and multi-primitive timing harness (`--features timing`) |
+| `firmware-stm32-timing` | the same harness on a second vendor's M4 (STM32F303) |
 | `ct-probe` | thumbv7em staticlib exposing each primitive as a symbol for binary analysis |
-| `capture` | `collect_timing.py` — drives the timing harness over UART |
-| `analysis` | `parse_perf`, `plot_perf`, `dudect`, `ct_binary`, `opt_sweep`, `tables`, `make_figures`, `selftest` |
-| `docs` | protocol security, hardware setup, BOM, experiment runbook, status |
+| `capture` | `collect_timing.py` — sweeps every primitive over UART |
+| `analysis` | `matrix` (leakage matrix), `dudect`, `ct_binary`, `opt_sweep`, `plot_perf`, `tables`, `make_figures`, `selftest` |
+| `docs` | verification, hardware setup, BOM, experiment runbook, status |
 
 `make_figures.py` produces **7 figures** (throughput, memory-safety overhead,
 permutation cost, timing histograms, t-statistic convergence, optimization-level

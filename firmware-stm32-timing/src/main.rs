@@ -25,12 +25,7 @@ use core::fmt::Write;
 use cortex_m::peripheral::DWT;
 use cortex_m_rt::entry;
 use panic_halt as _;
-use rustguard_core::ascon_aead_encrypt;
-
-#[cfg(not(feature = "leaky"))]
-use rustguard_core::ascon_aead_decrypt as aead_decrypt;
-#[cfg(feature = "leaky")]
-use rustguard_core::ascon_aead_decrypt_variabletime as aead_decrypt;
+use probes::{Probe, MAX_TAG, PROBES};
 
 mod board {
     //! Isolated `unsafe` MMIO for the STM32F303 (RM0316). The crypto crates stay
@@ -109,10 +104,6 @@ impl Write for Uart {
     }
 }
 
-const NONCE: [u8; 16] = [0x00; 16];
-const AD: [u8; 0] = [];
-const FIXED_PT: [u8; 16] = [0x00; 16];
-
 fn hexval(c: u8) -> u8 {
     match c {
         b'0'..=b'9' => c - b'0',
@@ -121,14 +112,12 @@ fn hexval(c: u8) -> u8 {
         _ => 0,
     }
 }
-fn read_hex_16() -> [u8; 16] {
-    let mut out = [0u8; 16];
-    for byte in out.iter_mut() {
+fn read_hex(n: usize, out: &mut [u8]) {
+    for byte in out.iter_mut().take(n) {
         let hi = hexval(board::getc());
         let lo = hexval(board::getc());
         *byte = (hi << 4) | lo;
     }
-    out
 }
 fn send_hex(bytes: &[u8]) {
     const LUT: &[u8; 16] = b"0123456789abcdef";
@@ -143,41 +132,19 @@ fn cyccnt() -> u32 {
     DWT::cycle_count()
 }
 
-fn measure_encrypt(key: &[u8; 16], pt: &[u8; 16]) -> u32 {
+/// Time the selected crate's own verification, interrupts masked, with the tag
+/// behind `black_box` so the comparison cannot be hoisted out of the measured
+/// region. Identical to the TM4C harness — that is the point: same measurement,
+/// different silicon vendor.
+fn measure_verify(p: &Probe, tag: &[u8]) -> u32 {
     use core::hint::black_box;
-    let mut ct = [0u8; 16];
-    let mut tag = [0u8; 16];
     cortex_m::interrupt::free(|_| {
         let s = cyccnt();
-        ascon_aead_encrypt(black_box(key), &NONCE, &AD, black_box(&pt[..]), &mut ct, &mut tag);
+        let ok = (p.verify)(black_box(tag));
         let e = cyccnt();
-        let _ = black_box(&ct);
-        let _ = black_box(&tag);
-        e.wrapping_sub(s)
-    })
-}
-
-fn measure_decrypt(key: &[u8; 16], tag: &[u8; 16]) -> u32 {
-    use core::hint::black_box;
-    let mut ct = [0u8; 16];
-    let mut real_tag = [0u8; 16];
-    ascon_aead_encrypt(key, &NONCE, &AD, &FIXED_PT, &mut ct, &mut real_tag);
-    let mut rec = [0u8; 16];
-    cortex_m::interrupt::free(|_| {
-        let s = cyccnt();
-        let ok = aead_decrypt(black_box(key), &NONCE, &AD, black_box(&ct[..]), &mut rec, black_box(tag));
-        let e = cyccnt();
-        let _ = black_box(&rec);
         let _ = black_box(ok);
         e.wrapping_sub(s)
     })
-}
-
-fn correct_tag(key: &[u8; 16]) -> [u8; 16] {
-    let mut ct = [0u8; 16];
-    let mut tag = [0u8; 16];
-    ascon_aead_encrypt(key, &NONCE, &AD, &FIXED_PT, &mut ct, &mut tag);
-    tag
 }
 
 #[entry]
@@ -189,31 +156,46 @@ fn main() -> ! {
     board::uart_init();
     let mut u = Uart;
 
-    let variant = if cfg!(feature = "leaky") { "leaky" } else { "safe" };
-    let _ = writeln!(u, "# RustGuard STM32F303 timing harness ({})", variant);
-    let _ = writeln!(u, "# cmds: e=enc-timing v=dec-timing g=get-tag. reply 'cyc <n>'");
+    let _ = writeln!(u, "# RustGuard multi-primitive timing harness (STM32F303)");
+    let _ = writeln!(u, "# cmds: l=list s<id>=select g=get-tag v<tag>=verify-timing");
+    let _ = writeln!(u, "# probes: {}", PROBES.len());
     let _ = writeln!(u, "READY");
+
+    let mut sel: &'static Probe = &PROBES[0];
 
     loop {
         match board::getc() {
-            b'e' => {
-                let key = read_hex_16();
-                let pt = read_hex_16();
-                let c = measure_encrypt(&key, &pt);
-                let _ = writeln!(u, "cyc {}", c);
+            b'l' => {
+                for p in PROBES {
+                    let _ = writeln!(u, "p {} {} {}", p.id, p.tag_len, p.name);
+                }
+                let _ = writeln!(u, "endp");
             }
-            b'v' => {
-                let key = read_hex_16();
-                let tag = read_hex_16();
-                let c = measure_decrypt(&key, &tag);
-                let _ = writeln!(u, "cyc {}", c);
+            b's' => {
+                let mut idb = [0u8; 1];
+                read_hex(1, &mut idb);
+                match probes::find(idb[0]) {
+                    Some(p) => {
+                        sel = p;
+                        let _ = writeln!(u, "ok {}", p.tag_len);
+                    }
+                    None => {
+                        let _ = writeln!(u, "err");
+                    }
+                }
             }
             b'g' => {
-                let key = read_hex_16();
-                let t = correct_tag(&key);
+                let mut buf = [0u8; MAX_TAG];
+                let n = (sel.correct_tag)(&mut buf);
                 let _ = u.write_str("tag ");
-                send_hex(&t);
+                send_hex(&buf[..n]);
                 let _ = writeln!(u);
+            }
+            b'v' => {
+                let mut tag = [0u8; MAX_TAG];
+                read_hex(sel.tag_len, &mut tag);
+                let c = measure_verify(sel, &tag[..sel.tag_len]);
+                let _ = writeln!(u, "cyc {}", c);
             }
             _ => {}
         }

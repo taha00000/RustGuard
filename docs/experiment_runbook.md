@@ -48,25 +48,56 @@ cd ../baseline-c && ./setup.sh && make tm4c-bench
 Deliverable: `results/perf_*.csv` → the cycles/byte and "cost of memory safety"
 comparison figure.
 
-## 2. Timing leakage: dudect on TM4C [BENCH]
+## 2a. Ecosystem sweep — the main experiment [BENCH]
+
+One image carries every primitive, so a complete sweep is **one flash per
+optimization level**, not one per crate:
+
+```powershell
+# TM4C123: all primitives x -O0..-O3, then build the leakage matrix
+scripts\sweep.ps1 -Port COM20 -Board tm4c
+
+# repeat on the second vendor's M4 (see docs/cross_silicon.md for wiring)
+scripts\sweep.ps1 -Port COM22 -Board stm32
+```
+
+Results land in `results/timing/<board>_<opt>_<primitive>.npz`, and
+`analysis/matrix.py` renders `results/figures/leakage_matrix.png` plus
+`results/tables/leakage_matrix.{md,tex}`.
+
+Screen first to decide what deserves attention (no hardware needed):
+
+```powershell
+cd firmware-tm4c; cargo build --release --features "timing leaky"; cd ..
+python analysis\ct_binary.py --elf <target>\thumbv7em-none-eabihf\release\firmware-tm4c --ecosystem
+```
+This ranks functions by constructs that can carry data-dependent timing. It is a
+**screening heuristic, not a detector** — every implementation has public-loop
+branches. Ground truth is the hardware sweep above.
+
+## 2b. Single-primitive deep dive: dudect on TM4C [BENCH]
 
 The side-channel result, on the same board. Validate the method with the leaky
 control FIRST, then test the real DUT.
 
-```sh
-cd firmware-tm4c
-# (a) leaky control — known-leaking variable-time tag compare
-cargo build --release --features "timing leaky" && <flash fw.bin>
-python ../capture/collect_timing.py --port COM5 --experiment tagcompare \
-       --variant leaky --n 20000 --out ../results/timing/leaky.npz
-# (b) constant-time DUT
-cargo build --release --features timing && <flash fw.bin>
-python ../capture/collect_timing.py --port COM5 --experiment tagcompare \
-       --variant safe --n 20000 --out ../results/timing/safe.npz
+The `timing leaky` image carries both the constant-time DUT (probe 0) and the
+variable-time control (probe 99), so a single flash covers both:
+
+```powershell
+scripts\flash.ps1 -Mode timing-leaky
+
+# see what the image carries
+python capture\collect_timing.py --port COM20 --list
+
+# (a) the deliberately leaky control — validates the method
+python capture\collect_timing.py --port COM20 --probe 99 --n 20000 `
+       --out results\timing\leaky.npz
+# (b) the constant-time DUT
+python capture\collect_timing.py --port COM20 --probe 0 --n 20000 `
+       --out results\timing\safe.npz
 # (c) analyze both together
-python ../analysis/dudect.py ../results/timing/safe.npz \
-       --leaky ../results/timing/leaky.npz \
-       --plot ../results/figures/timing.png
+python analysis\dudect.py results\timing\safe.npz --leaky results\timing\leaky.npz `
+       --plot results\figures\timing.png
 ```
 
 Interpretation:

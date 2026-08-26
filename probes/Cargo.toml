@@ -1,0 +1,29 @@
+﻿[package]
+name = "probes"
+version = "0.1.0"
+edition = "2021"
+
+[features]
+default = []
+# Adds RustGuard's deliberately variable-time decrypt as probe id 99 — the
+# positive control proving the harness detects a real leak on this hardware.
+leaky-control = ["rustguard-core/tvla-leaky-control"]
+
+[dependencies]
+rustguard-core = { path = "../rustguard-core" }
+subtle = { version = "2.5", default-features = false }
+aead = { version = "0.5", default-features = false }
+digest = { version = "0.10", default-features = false, features = ["mac"] }
+crypto-common = { version = "0.1", default-features = false }
+ascon-aead = { version = "0.4", default-features = false }
+chacha20poly1305 = { version = "0.10", default-features = false }
+aes-gcm = { version = "0.10", default-features = false, features = ["aes"] }
+aes-gcm-siv = { version = "0.11", default-features = false, features = ["aes"] }
+ccm = { version = "0.5", default-features = false }
+eax = { version = "0.5", default-features = false }
+aes = { version = "0.8", default-features = false }
+poly1305 = { version = "0.8", default-features = false }
+ghash = { version = "0.5", default-features = false }
+hmac = { version = "0.12", default-features = false }
+sha2 = { version = "0.10", default-features = false }
+cmac = { version = "0.7", default-features = false }

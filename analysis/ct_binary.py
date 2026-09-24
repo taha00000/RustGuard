@@ -192,6 +192,7 @@ _PROBE_CRATE = {
     "p_aesccm": "ccm-aes128",
     "p_hmac_sha256": "hmac-sha256",
     "p_cmac_aes": "cmac-aes128",
+    "p_canary": "CANARY-control",
 }
 
 

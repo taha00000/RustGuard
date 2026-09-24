@@ -1,18 +1,18 @@
-//! A registry of cryptographic primitives to evaluate for timing leakage.
+﻿//! A registry of cryptographic primitives to evaluate for timing leakage.
 //!
-//! Each `Probe` exposes one *verification* operation — the path where a secret
-//! tag/MAC is compared — behind a uniform interface, so the same firmware
+//! Each `Probe` exposes one *verification* operation â€” the path where a secret
+//! tag/MAC is compared â€” behind a uniform interface, so the same firmware
 //! harness, capture driver, and analysis can be pointed at any of them. This is
 //! what turns a single-implementation study into a systematic evaluation of the
 //! Rust cryptographic ecosystem on embedded targets.
 //!
 //! ## Why verification paths
 //! On a cacheless Cortex-M4 the classic cache-timing leak classes (AES T-tables,
-//! GHASH tables) do not manifest — a table lookup costs the same regardless of
+//! GHASH tables) do not manifest â€” a table lookup costs the same regardless of
 //! index. The leak classes that *do* manifest are:
 //!   1. secret-dependent branches (early returns),
 //!   2. variable-latency arithmetic (`UDIV`/`SDIV` are 2-12 cycles on M4),
-//!   3. early-return comparisons — canonically, tag/MAC verification.
+//!   3. early-return comparisons â€” canonically, tag/MAC verification.
 //! So verification is where the yield is, and every probe here measures it.
 //!
 //! ## Experiment design (matches capture/collect_timing.py)
@@ -37,20 +37,31 @@ pub enum Kind {
     Mac,
 }
 
+/// Largest key any probe takes (ChaCha20Poly1305 = 32).
+pub const MAX_KEY: usize = 32;
+
 pub struct Probe {
     pub id: u8,
     pub name: &'static str,
     pub kind: Kind,
     pub tag_len: usize,
-    /// Run the crate's own verification with `tag`. This is the timed operation.
+    pub key_len: usize,
+    /// Run the crate's own verification with `tag`. This is the timed operation
+    /// of the `verify` experiment.
     pub verify: fn(tag: &[u8]) -> bool,
     /// Write the genuine tag for the fixed key/message; returns its length.
     pub correct_tag: fn(out: &mut [u8; MAX_TAG]) -> usize,
+    /// Authenticate the fixed message under `key`. The timed operation of the
+    /// `keyed` experiment: it exercises the primitive's core (key schedule,
+    /// block function, field arithmetic) under a secret that actually varies,
+    /// which the verify experiment â€” fixed key, varying tag â€” never touches.
+    /// Returns a tag byte so the work cannot be optimized away.
+    pub encrypt_keyed: fn(key: &[u8]) -> u8,
 }
 
 const MSG: [u8; 16] = [0x11; 16];
 
-// ── AEAD probes ──────────────────────────────────────────────────────────────
+// â”€â”€ AEAD probes â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 // Each measures `decrypt_in_place_detached`, which recomputes the tag and runs
 // the crate's own comparison. The ciphertext is rebuilt identically for both
 // classes, so that constant cost cancels in the t-test.
@@ -94,6 +105,15 @@ macro_rules! aead_probe {
                 )
                 .is_ok()
             }
+
+            pub fn encrypt_keyed(key: &[u8]) -> u8 {
+                let c = <C as AeadKeyInit>::new_from_slice(&key[..$klen]).unwrap();
+                let mut buf = MSG;
+                let t = c
+                    .encrypt_in_place_detached(aead::Nonce::<C>::from_slice(&NONCE), &[], &mut buf)
+                    .unwrap();
+                core::hint::black_box(t[0])
+            }
         }
     };
 }
@@ -108,7 +128,7 @@ aead_probe!(p_aeseax, eax::Eax<aes::Aes128>, 16, 16);
 type Aes128Ccm = ccm::Ccm<aes::Aes128, ccm::consts::U16, ccm::consts::U13>;
 aead_probe!(p_aesccm, Aes128Ccm, 16, 13);
 
-// ── MAC probes ───────────────────────────────────────────────────────────────
+// â”€â”€ MAC probes â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 // Each measures the crate's own `verify_slice`, the canonical early-return risk.
 
 macro_rules! mac_probe {
@@ -131,6 +151,12 @@ macro_rules! mac_probe {
                 m.update(&MSG);
                 m.verify_slice(tag).is_ok()
             }
+
+            pub fn encrypt_keyed(key: &[u8]) -> u8 {
+                let mut m = <M as Mac>::new_from_slice(&key[..$klen]).unwrap();
+                m.update(&MSG);
+                core::hint::black_box(m.finalize().into_bytes()[0])
+            }
         }
     };
 }
@@ -138,7 +164,7 @@ macro_rules! mac_probe {
 mac_probe!(p_hmac_sha256, hmac::Hmac<sha2::Sha256>, 32);
 mac_probe!(p_cmac_aes, cmac::Cmac<aes::Aes128>, 16);
 
-// ── RustGuard's own ASCON: the validated control pair ────────────────────────
+// â”€â”€ RustGuard's own ASCON: the validated control pair â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 // The constant-time path and (under `leaky-control`) the deliberately
 // variable-time path. These are the positive/negative controls that prove the
 // method can detect a real leak on this hardware.
@@ -165,6 +191,14 @@ mod p_rustguard {
         let mut rec = [0u8; 16];
         ascon_aead_decrypt(&KEY, &NONCE, &[], &ct, &mut rec, &t)
     }
+    pub fn encrypt_keyed(key: &[u8]) -> u8 {
+        let mut k = [0u8; 16];
+        k.copy_from_slice(&key[..16]);
+        let mut ct = [0u8; 16];
+        let mut tag = [0u8; 16];
+        ascon_aead_encrypt(&k, &NONCE, &[], &MSG, &mut ct, &mut tag);
+        core::hint::black_box(tag[0])
+    }
 }
 
 #[cfg(feature = "leaky-control")]
@@ -190,6 +224,9 @@ mod p_rustguard_leaky {
         let mut rec = [0u8; 16];
         ascon_aead_decrypt_variabletime(&KEY, &NONCE, &[], &ct, &mut rec, &t)
     }
+    pub fn encrypt_keyed(key: &[u8]) -> u8 {
+        p_rustguard::encrypt_keyed(key)
+    }
 }
 
 #[cfg(feature = "leaky-control")]
@@ -198,7 +235,7 @@ mod p_canary {
     //!
     //! The `p_rustguard_leaky` control is a *realistic* leak (an early-exit tag
     //! comparison), and at -O2/-O3 LLVM rewrites it into branchless code, so it
-    //! stops leaking — a finding in its own right, but it leaves those columns
+    //! stops leaking â€” a finding in its own right, but it leaves those columns
     //! with no positive control. This control instead spends a number of cycles
     //! taken directly from the tag, behind `black_box` so the compiler may not
     //! reason about or remove it. It leaks by construction at every
@@ -218,17 +255,29 @@ mod p_canary {
         core::hint::black_box(acc);
         false // always rejects: no secret is revealed, only cycles are spent
     }
+    /// Same construction on the key side, so the `keyed` experiment also has a
+    /// control that leaks by construction at every optimization level.
+    pub fn encrypt_keyed(key: &[u8]) -> u8 {
+        let n = core::hint::black_box(key[0]) as usize & 0x3F;
+        let mut acc = 0u32;
+        for i in 0..n {
+            acc = core::hint::black_box(acc.wrapping_add(i as u32));
+        }
+        core::hint::black_box(acc as u8)
+    }
 }
 
 macro_rules! entry {
-    ($id:expr, $name:expr, $kind:expr, $len:expr, $m:ident) => {
+    ($id:expr, $name:expr, $kind:expr, $len:expr, $klen:expr, $m:ident) => {
         Probe {
             id: $id,
             name: $name,
             kind: $kind,
             tag_len: $len,
+            key_len: $klen,
             verify: $m::verify,
             correct_tag: $m::correct,
+            encrypt_keyed: $m::encrypt_keyed,
         }
     };
 }
@@ -236,21 +285,22 @@ macro_rules! entry {
 /// Every probe available in this build. Ids are stable across builds so results
 /// can be joined across boards and optimization levels.
 pub static PROBES: &[Probe] = &[
-    entry!(0, "rustguard-ascon128", Kind::Aead, 16, p_rustguard),
-    entry!(1, "ascon-aead", Kind::Aead, 16, p_ascon_rc),
-    entry!(2, "chacha20poly1305", Kind::Aead, 16, p_chachapoly),
-    entry!(3, "aes-gcm", Kind::Aead, 16, p_aesgcm),
-    entry!(4, "aes-gcm-siv", Kind::Aead, 16, p_aesgcmsiv),
-    entry!(5, "eax-aes128", Kind::Aead, 16, p_aeseax),
-    entry!(6, "ccm-aes128", Kind::Aead, 16, p_aesccm),
-    entry!(7, "hmac-sha256", Kind::Mac, 32, p_hmac_sha256),
-    entry!(8, "cmac-aes128", Kind::Mac, 16, p_cmac_aes),
+    entry!(0, "rustguard-ascon128", Kind::Aead, 16, 16, p_rustguard),
+    entry!(1, "ascon-aead", Kind::Aead, 16, 16, p_ascon_rc),
+    entry!(2, "chacha20poly1305", Kind::Aead, 16, 32, p_chachapoly),
+    entry!(3, "aes-gcm", Kind::Aead, 16, 16, p_aesgcm),
+    entry!(4, "aes-gcm-siv", Kind::Aead, 16, 16, p_aesgcmsiv),
+    entry!(5, "eax-aes128", Kind::Aead, 16, 16, p_aeseax),
+    entry!(6, "ccm-aes128", Kind::Aead, 16, 16, p_aesccm),
+    entry!(7, "hmac-sha256", Kind::Mac, 32, 32, p_hmac_sha256),
+    entry!(8, "cmac-aes128", Kind::Mac, 16, 16, p_cmac_aes),
     #[cfg(feature = "leaky-control")]
-    entry!(98, "CANARY-control", Kind::Aead, 16, p_canary),
+    entry!(98, "CANARY-control", Kind::Aead, 16, 16, p_canary),
     #[cfg(feature = "leaky-control")]
-    entry!(99, "rustguard-LEAKY-control", Kind::Aead, 16, p_rustguard_leaky),
+    entry!(99, "rustguard-LEAKY-control", Kind::Aead, 16, 16, p_rustguard_leaky),
 ];
 
 pub fn find(id: u8) -> Option<&'static Probe> {
     PROBES.iter().find(|p| p.id == id)
 }
+

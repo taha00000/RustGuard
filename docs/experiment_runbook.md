@@ -95,6 +95,23 @@ Two things surprise people (and reviewers) on first read:
   leaks in every column. A "no leakage detected" verdict is only meaningful in a
   column where a control demonstrably leaks.
 
+### Two experiments, and what each one can claim
+
+* **`verify`** — fixed key, varying tag. Measures the crate's *comparison* path.
+  A clean verdict says the tag/MAC check is constant-time; it says nothing about
+  the cipher.
+* **`keyed`** — fixed vs random key (classic dudect). Measures the crate's own
+  core: key schedule, block function, field arithmetic. This is the experiment
+  that speaks to the primitive itself.
+
+They are reported as separate matrices on purpose. Note that
+`rustguard-LEAKY-control` is a control only for `verify`: its variable-time
+behaviour is in the tag comparison, so under `keyed` it executes the same
+encryption as the constant-time probe and measures identically. The keyed
+columns are therefore validated by `CANARY-control` alone, and the leaky control
+is excluded from that matrix rather than shown as a row that would imply a
+validation it does not provide.
+
 ## 2b. Single-primitive deep dive: dudect on TM4C [BENCH]
 
 The side-channel result, on the same board. Validate the method with the leaky

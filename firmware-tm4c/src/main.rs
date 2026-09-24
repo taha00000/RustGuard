@@ -53,6 +53,51 @@ fn wr(addr: u32, v: u32) {
     unsafe { core::ptr::write_volatile(addr as *mut u32, v) }
 }
 
+// ── clock axis ───────────────────────────────────────────────────────────────
+// The TM4C123 boots on the 16 MHz precision internal oscillator. The `clk80`
+// build instead runs the PLL at 80 MHz, the part's maximum, which changes how
+// the flash and the core interact (the flash cannot sustain 80 MHz accesses, so
+// the hardware inserts wait states). Identical code, identical binary layout,
+// different memory-system behaviour — the embedded counterpart to varying an
+// optimization level.
+#[cfg(feature = "clk80")]
+const SYSCTL_RIS: u32 = 0x400F_E050;
+#[cfg(feature = "clk80")]
+const SYSCTL_RCC: u32 = 0x400F_E060;
+#[cfg(feature = "clk80")]
+const SYSCTL_RCC2: u32 = 0x400F_E070;
+
+/// 80 MHz from the 16 MHz main oscillator via the PLL (TM4C123 datasheet §5.3).
+#[cfg(feature = "clk80")]
+fn clock_init() {
+    // Use RCC2 for the finer SYSDIV field, and bypass the PLL while it locks.
+    wr(SYSCTL_RCC2, rd(SYSCTL_RCC2) | (1 << 31) | (1 << 11));
+    // Main oscillator, 16 MHz crystal, oscillator source = MOSC.
+    let mut rcc = rd(SYSCTL_RCC);
+    rcc = (rcc & !(0x1F << 6)) | (0x15 << 6); // XTAL = 16 MHz
+    rcc &= !(1 << 22); // clear USESYSDIV; RCC2 owns the divisor
+    wr(SYSCTL_RCC, rcc);
+    let mut rcc2 = rd(SYSCTL_RCC2);
+    rcc2 &= !(0x7 << 4); // OSCSRC2 = MOSC
+    rcc2 &= !(1 << 13); // power up the PLL
+    rcc2 |= 1 << 30; // DIV400: the divisor applies to 400 MHz
+    rcc2 = (rcc2 & !(0x7F << 22)) | (4 << 22); // SYSDIV2 = 4 -> 400/5 = 80 MHz
+    wr(SYSCTL_RCC2, rcc2);
+    while rd(SYSCTL_RIS) & (1 << 6) == 0 {} // PLLLRIS: wait for lock
+    wr(SYSCTL_RCC2, rd(SYSCTL_RCC2) & !(1 << 11)); // release BYPASS2
+}
+#[cfg(not(feature = "clk80"))]
+fn clock_init() {}
+
+/// Core frequency of this build, reported in the banner.
+const fn sysclk_hz() -> u32 {
+    if cfg!(feature = "clk80") {
+        80_000_000
+    } else {
+        16_000_000
+    }
+}
+
 fn uart_init() {
     wr(SYSCTL_RCGCUART, rd(SYSCTL_RCGCUART) | 1);
     wr(SYSCTL_RCGCGPIO, rd(SYSCTL_RCGCGPIO) | 1); // port A
@@ -64,9 +109,12 @@ fn uart_init() {
     wr(GPIOA_BASE + 0x52C, 0x11); // PCTL AF1
     wr(GPIOA_BASE + 0x51C, 0x3); // DEN PA0,PA1
     wr(UART0_CTL, 0);
-    // 16 MHz, 115200 baud: BRD = 16e6/(16*115200) = 8.6805 -> IBRD=8, FBRD=44
-    wr(UART0_IBRD, 8);
-    wr(UART0_FBRD, 44);
+    // BRD = sysclk / (16 * baud); IBRD is the integer part, FBRD the fraction
+    // scaled by 64 and rounded.  16 MHz -> 8, 44;  80 MHz -> 43, 26.
+    const BAUD: u32 = 115_200;
+    const BRD_X64: u32 = (sysclk_hz() as u64 * 4 / BAUD as u64) as u32; // = 64*sysclk/(16*baud)
+    wr(UART0_IBRD, BRD_X64 / 64);
+    wr(UART0_FBRD, BRD_X64 % 64);
     wr(UART0_LCRH, 0x70); // 8N1, FIFO
     wr(UART0_CC, 0);
     wr(UART0_CTL, 0x301); // UARTEN | TXE | RXE
@@ -95,6 +143,8 @@ fn main() -> ! {
     core.DCB.enable_trace();
     core.DWT.enable_cycle_counter();
 
+    // Clock first: the UART divisors are derived from the configured sysclk.
+    clock_init();
     uart_init();
     let mut u = Uart;
 
@@ -239,8 +289,22 @@ fn run(u: &mut Uart) -> ! {
         })
     }
 
+    /// Time the selected crate authenticating the fixed message under `key`.
+    /// The `keyed` experiment: unlike `verify` (fixed key, varying tag), the
+    /// secret itself varies, so the primitive's core — key schedule, block
+    /// function, field arithmetic — is what gets measured.
+    fn measure_keyed(p: &Probe, key: &[u8]) -> u32 {
+        cortex_m::interrupt::free(|_| {
+            let s = cyccnt();
+            let out = (p.encrypt_keyed)(black_box(key));
+            let e = cyccnt();
+            let _ = black_box(out);
+            e.wrapping_sub(s)
+        })
+    }
+
     let _ = writeln!(u, "# RustGuard multi-primitive timing harness (TM4C123)");
-    let _ = writeln!(u, "# cmds: l=list s<id>=select g=get-tag v<tag>=verify-timing");
+    let _ = writeln!(u, "# cmds: l=list s<id>=select g=get-tag v<tag>=verify k<key>=keyed");
     let _ = writeln!(u, "# probes: {}", PROBES.len());
     let _ = writeln!(u, "READY");
 
@@ -260,7 +324,7 @@ fn run(u: &mut Uart) -> ! {
                 match probes::find(idb[0]) {
                     Some(p) => {
                         sel = p;
-                        let _ = writeln!(u, "ok {}", p.tag_len);
+                        let _ = writeln!(u, "ok {} {}", p.tag_len, p.key_len);
                     }
                     None => {
                         let _ = writeln!(u, "err");
@@ -278,6 +342,12 @@ fn run(u: &mut Uart) -> ! {
                 let mut tag = [0u8; MAX_TAG];
                 read_hex(sel.tag_len, &mut tag);
                 let c = measure_verify(sel, &tag[..sel.tag_len]);
+                let _ = writeln!(u, "cyc {}", c);
+            }
+            b'k' => {
+                let mut key = [0u8; probes::MAX_KEY];
+                read_hex(sel.key_len, &mut key);
+                let c = measure_keyed(sel, &key[..sel.key_len]);
                 let _ = writeln!(u, "cyc {}", c);
             }
             _ => {}

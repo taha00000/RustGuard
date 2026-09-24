@@ -17,6 +17,11 @@ panic-halt = "0.2"
 default = []
 # Links the variable-time tag check as the timing-leakage positive control.
 leaky = ["probes/leaky-control"]
+# Clock / flash-latency axis: run identical code at 32 or 64 MHz instead of the
+# 8 MHz reset default, which raises flash wait states (to 1 and 2 respectively)
+# and brings the prefetch buffer into play.
+clk32 = []
+clk64 = []
 
 [profile.release]
 opt-level = 3

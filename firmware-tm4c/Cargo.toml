@@ -19,6 +19,9 @@ timing = ["dep:probes"]
 # Adds the deliberately variable-time control (probe id 99) to the registry.
 # Only meaningful together with `timing`.
 leaky = ["probes/leaky-control", "rustguard-core/tvla-leaky-control"]
+# Clock axis: run at the part's maximum 80 MHz via the PLL instead of the 16 MHz
+# reset default, which puts flash wait states into the instruction path.
+clk80 = []
 
 [profile.release]
 opt-level = 3

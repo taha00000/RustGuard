@@ -72,8 +72,87 @@ mod board {
     const CR1_RE: u32 = 1 << 2;
     const CR1_TE: u32 = 1 << 3;
 
-    // HSI = 8 MHz after reset; PCLK1 = PCLK2 = 8 MHz (prescalers /1). 115200 8N1.
+    // ── clock / flash-latency axis ───────────────────────────────────────────
+    // The memory system, not just the core, can shape timing on an MCU: above
+    // 24 MHz the F303's flash needs wait states, and above 48 MHz two of them,
+    // with a prefetch buffer in front. Running identical code at 8 / 32 / 64 MHz
+    // varies flash latency and prefetch behaviour while holding the compiler,
+    // the binary and the silicon constant.
+    //   default : HSI 8 MHz,  0 wait states, no PLL
+    //   clk32   : PLL HSI/2 x8  = 32 MHz, 1 wait state
+    //   clk64   : PLL HSI/2 x16 = 64 MHz, 2 wait states, APB1 /2
+    #[cfg(any(feature = "clk32", feature = "clk64"))]
+    mod pll {
+        pub const RCC_CR: u32 = 0x4002_1000;
+        pub const RCC_CFGR: u32 = 0x4002_1004;
+        pub const FLASH_ACR: u32 = 0x4002_2000;
+        pub const RCC_CR_PLLON: u32 = 1 << 24;
+        pub const RCC_CR_PLLRDY: u32 = 1 << 25;
+        pub const FLASH_ACR_PRFTBE: u32 = 1 << 4;
+    }
+
+    #[cfg(feature = "clk64")]
+    const PLL_MUL_BITS: u32 = 14; // x16
+    #[cfg(all(feature = "clk32", not(feature = "clk64")))]
+    const PLL_MUL_BITS: u32 = 6; // x8
+
+    #[cfg(feature = "clk64")]
+    const SYSCLK_HZ: u32 = 64_000_000;
+    #[cfg(all(feature = "clk32", not(feature = "clk64")))]
+    const SYSCLK_HZ: u32 = 32_000_000;
+    #[cfg(not(any(feature = "clk32", feature = "clk64")))]
+    const SYSCLK_HZ: u32 = 8_000_000;
+
+    // APB1 is capped at 36 MHz, so 64 MHz runs it through /2. Both PLL settings
+    // therefore land PCLK1 on 32 MHz; only the plain HSI build differs.
+    #[cfg(feature = "clk64")]
+    const CLOCK_HZ: u32 = 32_000_000;
+    #[cfg(all(feature = "clk32", not(feature = "clk64")))]
+    const CLOCK_HZ: u32 = 32_000_000;
+    #[cfg(not(any(feature = "clk32", feature = "clk64")))]
     const CLOCK_HZ: u32 = 8_000_000;
+
+    /// Bring the core up to the configured frequency. A no-op on the default
+    /// build, which stays on the raw 8 MHz HSI with zero wait states.
+    #[cfg(any(feature = "clk32", feature = "clk64"))]
+    pub fn clock_init() {
+        use pll::*;
+
+        /// Wait states required for the configured SYSCLK (RM0316 §4.5.1).
+        const fn latency() -> u32 {
+            if SYSCLK_HZ > 48_000_000 {
+                2
+            } else if SYSCLK_HZ > 24_000_000 {
+                1
+            } else {
+                0
+            }
+        }
+
+        // Flash latency must be raised BEFORE the clock speeds up.
+        wr(FLASH_ACR, FLASH_ACR_PRFTBE | latency());
+        // PLL source = HSI/2 (PLLSRC = 0), multiplier from the feature.
+        let mut cfgr = rd(RCC_CFGR);
+        cfgr &= !((0xF << 18) | (1 << 16) | (0b111 << 8) | 0b11);
+        cfgr |= PLL_MUL_BITS << 18;
+        if SYSCLK_HZ > 36_000_000 {
+            cfgr |= 0b100 << 8; // PPRE1 = /2 to keep APB1 within spec
+        }
+        wr(RCC_CFGR, cfgr);
+        wr(RCC_CR, rd(RCC_CR) | RCC_CR_PLLON);
+        while rd(RCC_CR) & RCC_CR_PLLRDY == 0 {}
+        wr(RCC_CFGR, rd(RCC_CFGR) | 0b10); // SW = PLL
+        while (rd(RCC_CFGR) >> 2) & 0b11 != 0b10 {}
+    }
+    #[cfg(not(any(feature = "clk32", feature = "clk64")))]
+    pub fn clock_init() {}
+
+    /// The configured core frequency, reported in the banner so captures can be
+    /// labelled without guessing.
+    pub const fn sysclk_hz() -> u32 {
+        SYSCLK_HZ
+    }
+
     const BAUD: u32 = 115_200;
 
     const PORTS: [u32; 2] = [USART1, USART2];
@@ -174,6 +253,20 @@ fn cyccnt() -> u32 {
 /// behind `black_box` so the comparison cannot be hoisted out of the measured
 /// region. Identical to the TM4C harness — that is the point: same measurement,
 /// different silicon vendor.
+/// Time the selected crate authenticating the fixed message under `key` — the
+/// `keyed` experiment, which varies the secret itself and so measures the
+/// primitive's core rather than its final comparison.
+fn measure_keyed(p: &Probe, key: &[u8]) -> u32 {
+    use core::hint::black_box;
+    cortex_m::interrupt::free(|_| {
+        let s = cyccnt();
+        let out = (p.encrypt_keyed)(black_box(key));
+        let e = cyccnt();
+        let _ = black_box(out);
+        e.wrapping_sub(s)
+    })
+}
+
 fn measure_verify(p: &Probe, tag: &[u8]) -> u32 {
     use core::hint::black_box;
     cortex_m::interrupt::free(|_| {
@@ -191,11 +284,13 @@ fn main() -> ! {
     core.DCB.enable_trace();
     core.DWT.enable_cycle_counter();
 
+    board::clock_init();
     board::uart_init();
     let mut u = Uart;
 
     let _ = writeln!(u, "# RustGuard multi-primitive timing harness (STM32F303)");
-    let _ = writeln!(u, "# cmds: l=list s<id>=select g=get-tag v<tag>=verify-timing");
+    let _ = writeln!(u, "# sysclk: {} Hz", board::sysclk_hz());
+    let _ = writeln!(u, "# cmds: l=list s<id>=select g=get-tag v<tag>=verify k<key>=keyed");
     let _ = writeln!(u, "# probes: {}", PROBES.len());
     let _ = writeln!(u, "READY");
 
@@ -215,7 +310,7 @@ fn main() -> ! {
                 match probes::find(idb[0]) {
                     Some(p) => {
                         sel = p;
-                        let _ = writeln!(u, "ok {}", p.tag_len);
+                        let _ = writeln!(u, "ok {} {}", p.tag_len, p.key_len);
                     }
                     None => {
                         let _ = writeln!(u, "err");
@@ -233,6 +328,12 @@ fn main() -> ! {
                 let mut tag = [0u8; MAX_TAG];
                 read_hex(sel.tag_len, &mut tag);
                 let c = measure_verify(sel, &tag[..sel.tag_len]);
+                let _ = writeln!(u, "cyc {}", c);
+            }
+            b'k' => {
+                let mut key = [0u8; probes::MAX_KEY];
+                read_hex(sel.key_len, &mut key);
+                let c = measure_keyed(sel, &key[..sel.key_len]);
                 let _ = writeln!(u, "cyc {}", c);
             }
             _ => {}

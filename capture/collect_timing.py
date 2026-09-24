@@ -68,13 +68,15 @@ def list_probes(ser):
     return out
 
 
-def select(ser, probe_id: int) -> int:
+def select(ser, probe_id: int):
+    """-> (tag_len, key_len). Older firmware replies with the tag length only."""
     ser.reset_input_buffer()
     ser.write(b"s" + f"{probe_id:02x}".encode())
     ln = _readline(ser)
     if not ln.startswith("ok"):
         raise RuntimeError(f"select {probe_id} failed: {ln!r}")
-    return int(ln.split()[1])
+    parts = ln.split()
+    return int(parts[1]), (int(parts[2]) if len(parts) > 2 else 16)
 
 
 def correct_tag(ser) -> bytes:
@@ -86,8 +88,8 @@ def correct_tag(ser) -> bytes:
     return bytes.fromhex(ln.split()[1])
 
 
-def measure(ser, tag: bytes) -> int:
-    ser.write(b"v" + tag.hex().encode())
+def measure(ser, payload: bytes, cmd: bytes = b"v") -> int:
+    ser.write(cmd + payload.hex().encode())
     ln = _readline(ser)
     if not ln.startswith("cyc "):
         raise RuntimeError(f"expected 'cyc <n>', got {ln!r}")
@@ -113,17 +115,38 @@ def run_probe(ser, probe_id, tag_len, name, n, rng):
     return cycles, labels
 
 
-def save(path, cycles, labels, probe, board, opt):
+def run_probe_keyed(ser, probe_id, name, n, rng):
+    """Classic dudect: fixed key vs random key, timing the primitive itself.
+
+    The verify experiment holds the key constant and varies the tag, so it only
+    exercises the final comparison. Here the *secret* varies, which is what puts
+    the key schedule, block function and field arithmetic under test.
+    """
+    _tag_len, key_len = select(ser, probe_id)
+    fixed = bytes([0x42] * key_len)
+
+    cycles = np.empty(n, dtype=np.uint32)
+    labels = np.empty(n, dtype=np.uint8)
+    for i in range(n):
+        is_random = (i % 2) == 1
+        key = bytes(rng.integers(0, 256, key_len, dtype=np.uint8)) if is_random else fixed
+        cycles[i] = measure(ser, key, cmd=b"k")
+        labels[i] = 1 if is_random else 0
+    return cycles, labels
+
+
+def save(path, cycles, labels, probe, board, opt, experiment="verify", clock="default"):
     os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
     np.savez_compressed(
         path,
         cycles=cycles,
         labels=labels,
         variant=probe,
-        experiment="verify",
+        experiment=experiment,
         probe=probe,
         board=board,
         opt=opt,
+        clock=clock,
     )
 
 
@@ -141,6 +164,19 @@ def main():
     ap.add_argument("--out", help="output .npz (single-probe mode)")
     ap.add_argument("--outdir", default="results/timing", help="output dir (sweep mode)")
     ap.add_argument("--list", action="store_true", help="list probes and exit")
+    ap.add_argument(
+        "--clock",
+        default="default",
+        help="core-frequency label for the clock/flash-latency axis, e.g. 32MHz; "
+        "'default' means the board's reset clock (16 MHz TM4C, 8 MHz STM32)",
+    )
+    ap.add_argument(
+        "--experiment",
+        choices=["verify", "keyed"],
+        default="verify",
+        help="verify = fixed key, varying tag (comparison path); "
+        "keyed = fixed vs random key (the primitive's own core)",
+    )
     cfg = ap.parse_args()
 
     if serial is None:
@@ -163,13 +199,23 @@ def main():
     if not targets:
         sys.exit(f"probe id {cfg.probe} not present in this firmware")
 
+    keyed = cfg.experiment == "keyed"
     for pid, tag_len, name in targets:
-        cycles, labels = run_probe(ser, pid, tag_len, name, cfg.n, rng)
+        if keyed:
+            cycles, labels = run_probe_keyed(ser, pid, name, cfg.n, rng)
+        else:
+            cycles, labels = run_probe(ser, pid, tag_len, name, cfg.n, rng)
         if cfg.out and cfg.probe is not None:
             path = cfg.out
         else:
-            path = os.path.join(cfg.outdir, f"{cfg.board}_{cfg.opt}_{name}.npz")
-        save(path, cycles, labels, name, cfg.board, cfg.opt)
+            # keyed captures get their own filenames so both experiments can
+            # live side by side in one results directory
+            suffix = "_keyed" if keyed else ""
+            clk = "" if cfg.clock == "default" else f"_{cfg.clock}"
+            path = os.path.join(
+                cfg.outdir, f"{cfg.board}{clk}_{cfg.opt}_{name}{suffix}.npz"
+            )
+        save(path, cycles, labels, name, cfg.board, cfg.opt, cfg.experiment, cfg.clock)
         f_mean = cycles[labels == 0].mean()
         r_mean = cycles[labels == 1].mean()
         print(f"  {name:<26} fixed={f_mean:>9.1f}c random={r_mean:>9.1f}c -> {path}")

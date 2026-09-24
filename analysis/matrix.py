@@ -37,8 +37,14 @@ from dudect import THRESHOLD, load, welch_scalar
 from figutil import ensure_parent, watermark, write_table
 
 
-def collect_cells(timing_dir: str):
-    """-> {primitive: {column: (abs_t, leaks)}}, ordered column list."""
+def collect_cells(timing_dir: str, experiment: str = "verify"):
+    """-> {primitive: {column: (abs_t, leaks)}}, ordered column list.
+
+    `experiment` selects which measurement to tabulate: "verify" (fixed key,
+    varying tag — the comparison path) or "keyed" (fixed vs random key — the
+    primitive's own core). They are separate matrices because they test
+    different code and a clean verdict in one says nothing about the other.
+    """
     cells: dict[str, dict[str, tuple[float, bool]]] = {}
     columns: list[str] = []
     for path in sorted(glob.glob(os.path.join(timing_dir, "*.npz"))):
@@ -53,13 +59,23 @@ def collect_cells(timing_dir: str):
         # otherwise show up as phantom rows in a column of their own.
         if not ("board" in d and "opt" in d and "probe" in d):
             continue
+        if str(d.get("experiment", "verify")) != experiment:
+            continue
         board = str(d["board"])
         opt = str(d["opt"])
         primitive = str(d["probe"])
+        # The realistic leaky control's leak lives in the tag comparison, which
+        # the keyed experiment never runs — its encrypt path is the same code as
+        # the constant-time probe, and measures bit-identically. Reporting it as
+        # a control there would imply a validation it does not provide, so the
+        # keyed columns are validated by CANARY-control alone.
+        if experiment == "keyed" and primitive == "rustguard-LEAKY-control":
+            continue
 
         t = welch_scalar(cyc[lab == 0], cyc[lab == 1])
         at = float(min(abs(t), 1e3)) if np.isfinite(t) else 1e3
-        col = f"{board}/{opt}"
+        clock = str(d["clock"]) if "clock" in d else "default"
+        col = f"{board}/{opt}" if clock == "default" else f"{board}@{clock}/{opt}"
         cells.setdefault(primitive, {})[col] = (at, at > THRESHOLD)
         if col not in columns:
             columns.append(col)
@@ -72,8 +88,9 @@ def _fmt(v: float) -> str:
     return f"{v:.2f}"
 
 
-def make_matrix(timing_dir, fig_path=None, table_path=None, watermark_text=None):
-    cells, columns = collect_cells(timing_dir)
+def make_matrix(timing_dir, fig_path=None, table_path=None, watermark_text=None,
+                experiment="verify"):
+    cells, columns = collect_cells(timing_dir, experiment)
     if not cells:
         print("[matrix] no timing captures found — run capture/collect_timing.py first")
         return None
@@ -105,8 +122,9 @@ def make_matrix(timing_dir, fig_path=None, table_path=None, watermark_text=None)
             table_path,
             table_path.replace(".md", ".tex") if table_path.endswith(".md") else None,
             caption=f"Timing-leakage assessment per primitive, board and optimization "
-                    f"level (dudect; |t| > {THRESHOLD} indicates leakage).",
-            label="tab:leakagematrix",
+                    f"level for the {experiment} experiment "
+                    f"(dudect; |t| > {THRESHOLD} indicates leakage).",
+            label=f"tab:leakagematrix{'' if experiment == 'verify' else experiment}",
         )
         print(f"table -> {table_path}")
 
@@ -132,7 +150,10 @@ def make_matrix(timing_dir, fig_path=None, table_path=None, watermark_text=None)
         ax.set_xticklabels(columns, rotation=30, ha="right")
         ax.set_yticks(range(len(primitives)))
         ax.set_yticklabels(primitives, fontsize=9)
-        ax.set_title(f"Timing-leakage matrix (dudect |t|; red = leaks, threshold {THRESHOLD})")
+        title_what = ("verification path (fixed key, varying tag)" if experiment == "verify"
+                      else "primitive core (fixed vs random key)")
+        ax.set_title(f"Timing-leakage matrix — {title_what}\n"
+                     f"dudect |t|; red = leaks, threshold {THRESHOLD}", fontsize=10)
         watermark(fig, watermark_text)
         fig.tight_layout()
         ensure_parent(fig_path)
@@ -141,7 +162,7 @@ def make_matrix(timing_dir, fig_path=None, table_path=None, watermark_text=None)
         print(f"figure -> {fig_path}")
 
     n_leak = sum(1 for p in cells for c in cells[p] if cells[p][c][1])
-    print(f"[matrix] {len(primitives)} primitives x {len(columns)} configs, "
+    print(f"[matrix/{experiment}] {len(primitives)} primitives x {len(columns)} configs, "
           f"{n_leak} leaking cell(s)")
     return cells
 
@@ -153,8 +174,14 @@ def main():
     ap.add_argument("--fig", default="results/figures/leakage_matrix.png")
     ap.add_argument("--table", default="results/tables/leakage_matrix.md")
     ap.add_argument("--watermark", default=None)
+    ap.add_argument("--experiment", choices=["verify", "keyed", "both"], default="both")
     a = ap.parse_args()
-    make_matrix(a.timing_dir, a.fig, a.table, a.watermark)
+    wanted = ["verify", "keyed"] if a.experiment == "both" else [a.experiment]
+    for exp in wanted:
+        # the keyed matrix gets its own filenames so neither overwrites the other
+        fig = a.fig if exp == "verify" else a.fig.replace(".png", "_keyed.png")
+        tbl = a.table if exp == "verify" else a.table.replace(".md", "_keyed.md")
+        make_matrix(a.timing_dir, fig, tbl, a.watermark, exp)
 
 
 if __name__ == "__main__":

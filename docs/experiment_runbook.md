@@ -75,6 +75,26 @@ This ranks functions by constructs that can carry data-dependent timing. It is a
 **screening heuristic, not a detector** — every implementation has public-loop
 branches. Ground truth is the hardware sweep above.
 
+### Reading the matrix
+
+Two things surprise people (and reviewers) on first read:
+
+* **Identical |t| across boards and optimization levels is expected, not a
+  copy-paste error.** Welch's t is scale-invariant: when a primitive's cycle
+  count scales affinely with the data-dependent work (`a·k + b`), both the mean
+  difference and the standard deviation scale by `a`, so `a` and `b` cancel.
+  Every capture drives the boards with the same seeded tag sequence, so the same
+  underlying `k` distribution yields the same t on an 8 MHz STM32 and a 16 MHz
+  TM4C. The raw cycle counts differ (and are stored), but the statistic does not.
+* **Every column needs its own positive control.** The realistic control
+  (`rustguard-LEAKY-control`, an early-exit tag comparison) leaks at -O0/-O1 and
+  is then rewritten into branchless code by LLVM at -O2/-O3, where it stops
+  leaking — on *both* vendors. That is a finding in itself, but it means it
+  cannot validate the -O2/-O3 columns. `CANARY-control` spends tag-dependent
+  cycles behind `black_box`, which the compiler may not optimize through, so it
+  leaks in every column. A "no leakage detected" verdict is only meaningful in a
+  column where a control demonstrably leaks.
+
 ## 2b. Single-primitive deep dive: dudect on TM4C [BENCH]
 
 The side-channel result, on the same board. Validate the method with the leaky

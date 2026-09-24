@@ -1,0 +1,411 @@
+% RustGuard --- draft paper.
+%
+% Target: IACR Transactions on Cryptographic Hardware and Embedded Systems.
+% To switch to the TCHES class, replace the documentclass line with
+%   \documentclass[journal=tches,submission,spdx=false]{iacrtrans}
+% and drop the geometry/titling lines below; everything else is portable.
+%
+% BEFORE SUBMISSION: every citation in refs.bib is from memory and MUST be
+% checked against the actual paper (authors, venue, year, and above all the
+% claim attributed to it). Do not submit on trust.
+\documentclass[11pt,a4paper]{article}
+\usepackage[margin=1in]{geometry}
+\usepackage[T1]{fontenc}
+\usepackage{booktabs}
+\usepackage{graphicx}
+\usepackage{amsmath}
+\usepackage{url}
+\usepackage[hidelinks]{hyperref}
+\usepackage{xcolor}
+
+\newcommand{\todo}[1]{\textcolor{red}{[TODO: #1]}}
+
+\title{Does Constant-Time Rust Stay Constant-Time on Embedded Silicon?\\
+       A Systematic, Equipment-Free Evaluation}
+\author{Taha Hunaid Ali}
+\date{Draft --- \today}
+
+\begin{document}
+\maketitle
+
+\begin{abstract}
+Memory-safe languages are now recommended for security-critical firmware, and
+the Rust cryptographic ecosystem advertises constant-time execution through the
+\texttt{subtle} crate and branch-free implementation strategies. Whether those
+source-level guarantees survive compilation and reach the silicon that actually
+ships is an empirical question, and one that is usually answered with equipment
+most developers do not have.
+
+We report a systematic constant-time evaluation of eleven symmetric and two
+public-key Rust implementations on two Cortex-M4 microcontrollers from different
+vendors, using nothing but the core's own cycle counter. The study spans four
+optimization levels, five core-frequency configurations that change flash wait
+states, and two experiment designs that separate a primitive's comparison path
+from its arithmetic core: 257 captures and roughly 750\,000 on-chip
+measurements in total.
+
+Every production implementation is cycle-invariant in every configuration. We
+make that null result quantitative by injecting calibrated leaks of known size:
+on this platform a mean difference of $0.49$ cycles is detected, so ``no leakage
+observed'' becomes ``any leak above half a cycle would have been observed''. We
+further report three findings that the grid makes visible. First, LLVM
+\emph{removes} a deliberate early-exit timing leak at \texttt{-O2} and above ---
+identically on both vendors' silicon --- which means a positive control
+validated at one optimization level does not validate the others, and studies
+that validate once may be reporting unvalidated columns. Second, flash wait
+states inflate cycle counts by between $4.3\%$ and $27.2\%$ depending on whether
+a primitive is fetch- or compute-bound, without introducing data-dependent
+timing. Third, binary-level branch-counting triage produces eight false
+positives out of ten flagged primitives against measured ground truth, which
+bounds what such screening can claim.
+\end{abstract}
+
+\section{Introduction}
+
+Constant-time implementation is the standard defence against timing attacks on
+cryptographic code, and it is a property of the \emph{binary}, not of the
+source. Compilers are permitted to rewrite branch-free source into branching
+machine code, and a growing literature documents cases where they do. Rust adds
+a new dimension to this old problem: its cryptographic ecosystem is young,
+widely deployed in embedded contexts, and built on the premise that safety
+properties expressed in the type system and in libraries such as \texttt{subtle}
+survive to the artefact.
+
+Most constant-time evaluation on embedded targets assumes laboratory equipment
+--- an oscilloscope, a ChipWhisperer-class capture rig, or a trace probe. That
+assumption shapes which questions get asked and by whom. We take the opposite
+constraint as a design goal: every measurement in this paper is taken with the
+Cortex-M's own DWT cycle counter on a development board costing under
+\$20, and the entire study is reproducible by anyone holding the same board.
+
+\paragraph{Contributions.}
+\begin{itemize}
+  \item A systematic constant-time evaluation of thirteen Rust cryptographic
+        implementations --- nine AEADs and MACs, two public-key primitives, and
+        two controls --- across two silicon vendors, four optimization levels
+        and five core-frequency configurations (Section~\ref{sec:results}).
+  \item A \emph{calibrated leak ladder} that converts a null result into a
+        bounded one by measuring the smallest leak the platform can detect
+        (Section~\ref{sec:floor}).
+  \item The observation that a realistic positive control is itself
+        optimizer-dependent: the early-exit comparison we use as a control stops
+        leaking at \texttt{-O2}, on both vendors, so per-configuration control
+        validation is necessary rather than good practice
+        (Section~\ref{sec:optimizer}).
+  \item A quantified comparison of binary-level screening against measured
+        ground truth on the same image (Section~\ref{sec:static}).
+  \item An open artefact: the probe registry, both firmware harnesses, the
+        capture drivers and the analysis pipeline, with every raw capture.
+\end{itemize}
+
+\section{Background}
+
+\paragraph{Constant-time code and its enemies.}
+An implementation is constant-time when its execution time is independent of
+secret data. \todo{cite Kocher; Bernstein cache-timing; Almeida et al.\ ct-verif}
+
+\paragraph{dudect.}
+Rather than model the microarchitecture, dudect~\cite{dudect} tests the
+hypothesis that two input classes are timed identically, using Welch's
+$t$-test with a $|t| > 4.5$ threshold. We adopt its design, including
+percentile cropping for noisy platforms.
+
+\paragraph{What can leak on a Cortex-M4.}
+The M4 has no data cache and no branch predictor, so the leak classes that
+dominate the literature on application processors --- cache-line-granular table
+lookups, speculative execution --- cannot manifest. What remains is
+(i)~secret-dependent branching, (ii)~variable-latency instructions, notably
+\texttt{UDIV}/\texttt{SDIV} at 2--12 cycles, and (iii)~early-return comparison.
+This narrows the threat model in a way that makes an exhaustive, equipment-free
+study feasible, and it is why our conclusions are stated for this class of core
+rather than for Rust cryptography in general.
+
+\section{Methodology}
+
+\subsection{A uniform probe registry}
+Each implementation under test is wrapped as a \emph{probe} exposing the same
+three operations: produce a genuine tag, verify a supplied tag, and authenticate
+a fixed message under a supplied key. The firmware carries every probe in a
+single image and selects between them over a serial protocol, so a full sweep is
+one flash per configuration rather than one per crate, and adding an
+implementation to the study is one registry entry.
+
+\subsection{Two experiments}
+\label{sec:experiments}
+A single experiment design would have overstated our results, so we run two.
+
+\paragraph{\textsc{verify} --- the comparison path.}
+The key is fixed and the tag varies. The fixed class presents the genuine tag
+with its last byte flipped, so a byte-wise comparison runs nearly to completion;
+the random class presents a uniformly random tag, which mismatches almost
+immediately. Both classes are rejected, so both execute the same failure path
+and only the comparison differs.
+
+\paragraph{\textsc{keyed} --- the arithmetic core.}
+The classic dudect design: a fixed key against uniformly random keys, timing the
+implementation authenticating a fixed message. This is the experiment that
+exercises the AES key schedule and S-box, the GHASH and Poly1305 field
+arithmetic, the permutation, and --- for the public-key probes --- scalar
+multiplication. A clean \textsc{verify} verdict says nothing about the core, and
+we report the two matrices separately for that reason.
+
+\subsection{Controls, per configuration}
+\label{sec:controls}
+A null result is worthless without a positive control, and --- as
+Section~\ref{sec:optimizer} shows --- a control validated in one configuration
+may be silently inert in another. We therefore require every column of every
+matrix to contain a control that demonstrably leaks, and we use two:
+
+\begin{description}
+  \item[\textsc{leaky}] a realistic leak: an early-exit tag comparison, the
+        canonical mistake this kind of study exists to catch.
+  \item[\textsc{canary}] an optimizer-proof leak: work proportional to a secret
+        byte, behind \texttt{core::hint::black\_box}, which the compiler may not
+        reason through. It leaks by construction at every optimization level.
+\end{description}
+
+\subsection{Measurement}
+Measurements are taken with the DWT cycle counter with interrupts masked, and
+the secret input is passed through \texttt{black\_box} so the operation cannot
+be hoisted out of the measured region. On an in-order core with no cache and no
+preemption, the resulting count is a deterministic function of the input: the
+same input always yields exactly the same number. This is a much stronger
+measurement regime than an OS-scheduled core affords, and it is what allows the
+zero-spread and detection-floor claims below.
+
+\section{Experimental setup}
+
+\begin{table}[t]
+\centering
+\caption{Measurement grid. All configurations carry a validated control.}
+\label{tab:setup}
+\begin{tabular}{ll}
+\toprule
+Axis & Values \\
+\midrule
+Silicon      & TM4C123GH6PM (TI), STM32F303VC (ST) --- both Cortex-M4 \\
+Core clock   & 16, 80\,MHz (TM4C); 8, 32, 64\,MHz (STM32) \\
+Flash latency& 0--2 wait states, following the clock \\
+Optimization & \texttt{-O0}, \texttt{-O1}, \texttt{-O2}, \texttt{-O3} \\
+Experiments  & \textsc{verify}, \textsc{keyed} \\
+Primitives   & 9 AEAD/MAC, 2 public-key, 2 controls, 7 ladder rungs \\
+Traces       & 3000 per symmetric cell; 400 per public-key cell \\
+Total        & 257 captures, ${\approx}750\,200$ measurements \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+Table~\ref{tab:setup} summarises the grid. The implementations evaluated are
+\texttt{aes-gcm}, \texttt{aes-gcm-siv}, \texttt{chacha20poly1305},
+\texttt{ascon-aead}, \texttt{eax}, \texttt{ccm}, \texttt{hmac-sha256},
+\texttt{cmac-aes128}, an in-house ASCON-128, and the public-key primitives
+\texttt{x25519-dalek} and \texttt{p256} scalar multiplication. Version numbers
+are pinned in the artefact.
+
+\section{Results}
+\label{sec:results}
+
+\subsection{Symmetric primitives are cycle-invariant}
+
+\begin{table}[t]
+\centering
+\caption{Verification cost on the TM4C123 at \texttt{-O3}, 16\,MHz. Every
+implementation showed a cycle-count spread of exactly zero across all traces in
+both experiments and in every configuration.}
+\label{tab:cycles}
+\begin{tabular}{lrr}
+\toprule
+Implementation & Cycles (\textsc{verify}) & Spread \\
+\midrule
+\texttt{chacha20poly1305} & 7\,982 & 0 \\
+\texttt{rustguard-ascon128} & 8\,217 & 0 \\
+\texttt{ascon-aead} & 8\,769 & 0 \\
+\texttt{hmac-sha256} & 12\,772 & 0 \\
+\texttt{cmac-aes128} & 16\,445 & 0 \\
+\texttt{aes-gcm} & 29\,589 & 0 \\
+\texttt{ccm-aes128} & 41\,342 & 0 \\
+\texttt{aes-gcm-siv} & 78\,794 & 0 \\
+\texttt{eax-aes128} & 121\,707 & 0 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+Across the whole grid, no production implementation was flagged in any
+configuration. The stronger statement is the one in Table~\ref{tab:cycles}:
+in 108 of 130 \textsc{verify} captures and 116 of 127 \textsc{keyed} captures,
+the observed cycle count was \emph{identical for every trace} --- a spread of
+zero. The remaining captures are exactly the controls and ladder rungs. These
+implementations do not merely fall below a detection threshold; over the sampled
+input space they exhibit no input-dependent timing at all.
+
+\subsection{Public-key primitives}
+
+Symmetric primitives are the easy case: branch-free by construction. Scalar
+multiplication is where data-dependent branching and modular arithmetic
+traditionally cause trouble, and to our knowledge these crates have not
+previously been measured on embedded silicon. \texttt{x25519-dalek} costs
+$1\,963\,173$ cycles and \texttt{p256} scalar multiplication $6\,689\,177$
+cycles on the TM4C at \texttt{-O3}; both showed a spread of zero across random
+scalars, in both experiments and at every optimization level measured.
+
+\subsection{The optimizer removes a real timing leak}
+\label{sec:optimizer}
+
+\begin{table}[t]
+\centering
+\caption{The realistic positive control across optimization levels. LLVM
+rewrites the early-exit comparison into branchless code at \texttt{-O2}, and the
+control stops leaking --- on both vendors. The optimizer-proof canary leaks
+everywhere.}
+\label{tab:optimizer}
+\begin{tabular}{lrrrr}
+\toprule
+ & \multicolumn{2}{c}{TM4C123} & \multicolumn{2}{c}{STM32F303} \\
+\cmidrule(lr){2-3}\cmidrule(lr){4-5}
+Level & \textsc{leaky} $|t|$ & \textsc{canary} $|t|$ & \textsc{leaky} $|t|$ & \textsc{canary} $|t|$ \\
+\midrule
+\texttt{-O0} & 12\,997 & 61.28 & $\infty$ & 61.55 \\
+\texttt{-O1} & 11\,259 & 61.28 & 11\,259 & 61.55 \\
+\texttt{-O2} & 0.00 & 61.28 & 0.00 & 61.55 \\
+\texttt{-O3} & 0.00 & 61.28 & 0.00 & 61.55 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+Table~\ref{tab:optimizer} reports the finding we consider most useful to other
+practitioners. The early-exit comparison leaks enormously at \texttt{-O0} and
+\texttt{-O1} and then, at \texttt{-O2}, stops leaking entirely: LLVM rewrites it
+into branchless code. The effect reproduces identically on both vendors'
+silicon, which locates it in the compiler rather than in a microarchitecture.
+
+The methodological consequence matters more than the curiosity. A study that
+validates its harness once --- at one optimization level, as is common --- and
+then reports clean results at other levels may be reporting columns in which its
+control was inert, and therefore claiming detection capability it did not have
+at the time. This is not hypothetical: our own \texttt{-O2} and \texttt{-O3}
+columns were briefly in exactly that state before the canary was added.
+
+A second consequence is more cheerful: compilers are usually cast as the
+adversary of constant-time code, and here LLVM repaired a genuine leak. We do
+not suggest relying on this. It is an optimization decision, not a guarantee,
+and the same mechanism that removed the leak at \texttt{-O2} could reintroduce
+one elsewhere.
+
+\subsection{Flash wait states}
+\label{sec:clock}
+
+Raising the core clock past the flash's sustainable rate forces wait states.
+The same binary then costs more cycles --- but how many more depends on the
+primitive. ASCON verification inflates by $27.2\%$ from 16 to 80\,MHz on the
+TM4C and by $25.9\%$ from 8 to 32\,MHz on the STM32, while
+\texttt{hmac-sha256} inflates by only $4.3\%$ and \texttt{aes-gcm} by $6.4\%$:
+fetch-bound code pays for wait states, compute-bound code hides them behind
+work it was doing anyway. No configuration introduced data-dependent timing.
+
+\subsection{Binary screening against measured ground truth}
+\label{sec:static}
+
+Counting conditional branches in a disassembly is a cheap way to triage a
+dependency tree, and it is tempting to treat the result as evidence. Joining our
+census against measurements from the same image gives the error rate directly:
+of ten primitives flagged as carrying potentially data-dependent constructs,
+\emph{eight are false positives}, and none of the genuine leaks was missed.
+\texttt{chacha20poly1305} carries 45 conditional branches and is perfectly
+cycle-invariant --- the branches are driven by block counts, not secrets.
+Branch-counting prioritises what to measure; it does not detect leaks.
+
+\subsection{How small a leak can we see?}
+\label{sec:floor}
+
+\begin{table}[t]
+\centering
+\caption{Calibrated leak ladder on the TM4C123 at \texttt{-O3}. The smallest
+rung still flagged sets the platform's detection floor.}
+\label{tab:ladder}
+\begin{tabular}{lrrr}
+\toprule
+Injected leak & Mean difference (cycles) & $|t|$ & Detected \\
+\midrule
+1 iteration    & 0.49 & 37.60 & yes \\
+2 iterations   & 2.91 & 37.60 & yes \\
+4 iterations   & 7.28 & 37.60 & yes \\
+8 iterations   & 17.47 & 37.60 & yes \\
+16 iterations  & 62.12 & 37.60 & yes \\
+64 iterations  & 248.01 & 37.60 & yes \\
+256 iterations & 994.45 & 37.60 & yes \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+Every clean verdict above is bounded by Table~\ref{tab:ladder}: the smallest
+leak we injected, a single extra loop iteration producing a mean difference of
+$0.49$ cycles, is detected. Sub-cycle sensitivity is possible because the
+counter is exact and the injected leak makes the distribution bimodal, so the
+\emph{mean} difference can be a fraction of a cycle while every individual
+measurement is an integer.
+
+Two properties of the ladder deserve comment. First, $|t|$ is identical at every
+rung, because Welch's $t$ is invariant under affine scaling of the measurements:
+enlarging the leak scales the mean difference and the standard deviation
+together. The statistic therefore reports \emph{whether} the classes separate,
+not by how much, and a larger leak is not a stronger signal in this regime.
+Second, and consequently, the ladder establishes an upper bound on the floor
+rather than the floor itself: detection does not degrade as the leak shrinks to
+one iteration, so the true floor lies at or below $0.49$ cycles of mean
+difference, and would need a sub-iteration leak to locate exactly. We therefore
+state our results as: any leak above half a cycle of mean difference would have
+been detected, and none was. On a platform where measurement is noisy this same
+ladder yields a floor orders of magnitude higher, which is the comparison we
+intend it for.
+
+\section{Discussion and limitations}
+
+\paragraph{What this study does not cover.}
+We measure \emph{timing}, not power or electromagnetic emission; constant-time
+code can still leak through those channels, and a capture rig is required to say
+otherwise. Our conclusions are stated for in-order, cacheless Cortex-M4 cores:
+the leak classes we exclude by architecture --- cache-line timing, speculation
+--- are precisely those that dominate on application processors, and a
+constant-time verdict here does not transfer to those targets. Extending the
+same harness to application-class ARM cores is implemented and pending hardware
+\todo{fold in Raspberry Pi 3/4/5 results}.
+
+\paragraph{Sampled, not exhaustive.}
+Zero spread is observed over the sampled input space, not proven over all
+inputs. It is a strong empirical statement, not a proof, and it complements
+rather than replaces static verification.
+
+\paragraph{Two probe defects we found by checking.}
+Both are worth recording because they are the kind of error that produces a
+confident, wrong result. Our \texttt{x25519} probe initially compared a derived
+public key with a plain slice comparison, which is an early-exit memcmp; it
+measured a 279-cycle difference that we would have been entitled to report as a
+leak in a library whose entire purpose is constant-time execution. The leak was
+in our harness. Separately, the \texttt{p256} probe declared a 33-byte
+compressed point against a 32-byte buffer and silently failed its verify
+captures. Neither would have been caught by a pipeline that trusted its own
+outputs.
+
+\section{Related work}
+\todo{Write properly, and verify every citation against the source: dudect
+(Reparaz et al., DATE 2017); compiler-induced violations (Kaufmann et al., CANS
+2016; Simon, Chisnall \& Anderson, EuroS\&P 2018); static/symbolic CT analysis
+(ct-verif, Binsec/Rel); developer practice (Jancar et al., IEEE S\&P 2022);
+MicroWalk. Position this work as: systematic, multi-implementation,
+equipment-free, and quantified by a measured detection floor.}
+
+\section{Conclusion}
+
+Across 257 captures on two vendors' Cortex-M4 silicon, thirteen Rust
+cryptographic implementations --- including two public-key primitives --- showed
+no input-dependent timing, at a measured sensitivity of half a cycle. The
+ecosystem's constant-time claims hold on this class of target. The results that
+travel beyond this ecosystem are methodological: positive controls are
+optimization-dependent and must be validated per configuration, binary
+branch-counting over-approximates by a factor we can now quote, and a null
+timing result should be published with the detection floor that bounds it.
+
+\bibliographystyle{plain}
+\bibliography{refs}
+
+\end{document}

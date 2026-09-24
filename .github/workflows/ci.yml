@@ -19,17 +19,50 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
         with:
           targets: thumbv7em-none-eabihf
-      - name: cargo check firmware (TM4C: perf, timing harness, timing+leaky)
+      - name: Probe registry (default, controls, ladder, public-key)
+        working-directory: probes
+        run: |
+          cargo check --release
+          cargo check --release --features leaky-control
+          cargo check --release --features "leaky-control ladder pubkey"
+      - name: TM4C firmware (perf, timing, controls, 80 MHz clock, ladder+pubkey)
         working-directory: firmware-tm4c
         run: |
           cargo check --release
           cargo check --release --features timing
           cargo check --release --features "timing leaky"
-      - name: cargo check firmware (STM32F303 timing: safe + leaky)
+          cargo check --release --features "timing leaky clk80"
+          cargo check --release --features "timing leaky ladder pubkey"
+      - name: STM32F303 firmware (controls, 32/64 MHz clocks, ladder+pubkey)
         working-directory: firmware-stm32-timing
         run: |
           cargo check --release
           cargo check --release --features leaky
+          cargo check --release --features "leaky clk32"
+          cargo check --release --features "leaky clk64"
+          cargo check --release --features "leaky ladder pubkey"
+      - name: Public-key image must still fit the TM4C's 256 KB flash
+        working-directory: firmware-tm4c
+        run: |
+          cargo install cargo-binutils --locked || true
+          rustup component add llvm-tools-preview
+          cargo objcopy --release --features "timing leaky pubkey" -- -O binary fw_pk.bin
+          SIZE=$(stat -c %s fw_pk.bin)
+          echo "public-key image: $SIZE bytes"
+          test "$SIZE" -lt 262144 || { echo "image exceeds flash"; exit 1; }
+
+  host-harness:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-unknown-linux-gnu
+      - name: Application-class harness cross-compiles for aarch64
+        working-directory: pi-runner
+        run: |
+          cargo check --release --target aarch64-unknown-linux-gnu
+          cargo check --release --target aarch64-unknown-linux-gnu --features leaky
 
   binary-ct:
     runs-on: ubuntu-latest
@@ -61,10 +94,12 @@ jobs:
           python-version: "3.12"
       - name: Install analysis deps
         run: pip install -r analysis/requirements.txt
-      - name: Unit tests (timing-leakage t-test, perf parser)
+      - name: Unit tests (t-test, census, crate attribution, matrix assembly)
         run: python -m pytest analysis/tests -q
       - name: Pipeline self-test (synthetic, end-to-end)
         run: python analysis/selftest.py
+      - name: Committed results must still hold their invariants
+        run: python analysis/check_results.py
 
   proofs:
     runs-on: ubuntu-latest

@@ -1,137 +1,130 @@
 # RustGuard
 
-A memory-safe, `no_std` ASCON-128 implementation used as the device under test
-for a study of **whether Rust's source-level constant-time guarantees survive
-compilation to embedded silicon — measured as timing leakage on the chip itself —
-and what memory safety costs in cycles versus C and hand-optimized assembly.**
+**A systematic, equipment-free constant-time evaluation of the Rust
+cryptographic ecosystem on embedded silicon.**
 
-This is a research repository, not just a library. The cipher is a means to an
-end: a clean, verified, memory-safe ASCON whose constant-time behavior and
-performance are measured on a real Cortex-M4, using only the ARM core's built-in
-cycle counter — **no oscilloscope or ChipWhisperer required**, so anyone with the
-same dev board can reproduce the result.
+Thirteen Rust implementations — nine AEADs and MACs, two public-key primitives,
+and two deliberately-leaking controls — measured on two Cortex-M4
+microcontrollers from different vendors, across four optimization levels and five
+core-frequency configurations. **No oscilloscope, no ChipWhisperer, no trace
+probe**: every measurement comes from the ARM core's own DWT cycle counter, so
+anyone with a $20 development board can reproduce the whole study.
 
-## The study
+**257 captures, ~750,000 on-chip measurements, all real.** Nothing in
+`results/` is generated, interpolated, or simulated.
 
-**A systematic, equipment-free constant-time evaluation of the Rust cryptographic
-ecosystem on embedded targets.** Ten AEAD/MAC implementations — `aes-gcm`,
-`aes-gcm-siv`, `chacha20poly1305`, `ascon-aead`, `eax`, `ccm`, `hmac-sha256`,
-`cmac-aes128`, plus a verified in-house ASCON and a deliberately variable-time
-control — are measured on real Cortex-M4 silicon across four optimization levels
-and two silicon vendors, using nothing but a $20 dev board and its own cycle
-counter.
+## Results in one table
 
-**Why verification paths.** A Cortex-M4 has no cache, so the classic cache-timing
-leak classes (AES T-tables, GHASH tables) do not manifest — a table lookup costs
-the same regardless of index. What *does* leak on M4 is (1) secret-dependent
-branches, (2) variable-latency arithmetic (`UDIV`/`SDIV` are 2–12 cycles), and
-(3) early-return comparisons. Tag/MAC verification is where all three converge,
-so every probe measures the crate's own verification path.
+Every production implementation is cycle-invariant in every configuration. The
+sharper statement is that in **108 of 130** verification captures and **116 of
+127** keyed captures, the cycle count was *identical for every single trace* —
+a spread of exactly zero. The captures that do vary are exactly the controls.
 
-## Research question
+| finding | where |
+|---|---|
+| Nine AEAD/MAC and two public-key implementations show no input-dependent timing | `results/tables/leakage_matrix.md` |
+| **LLVM removes a real timing leak at `-O2`** — identically on both vendors | `results/tables/leakage_matrix.md` |
+| Flash wait states inflate cycles 4.3–27.2%, without creating data dependence | `tm4c_80MHz_*` vs `tm4c_O3_*` |
+| Binary branch-counting: **8 false positives out of 10 flagged**, 0 missed | `results/tables/static_vs_measured.md` |
+| Detection floor: a **0.49-cycle** mean difference is still caught | `results/tables/detection_floor.md` |
 
-NSA/CISA now recommend memory-safe languages for security-critical firmware, and
-Rust's `#![forbid(unsafe_code)]` plus the `subtle` crate advertise constant-time
-crypto. But constant-time at the source level is routinely undone by the compiler,
-and a source-level guarantee says nothing about the binary that actually ships or
-the silicon it runs on. RustGuard asks: **does correctness and the constant-time
-property hold all the way from source to silicon, and where does it break?** — and
-answers it by checking the same code at *four independent levels* (the proof and
-binary levels need no hardware at all; the timing level needs only a $20 board):
+The draft paper is in [`paper/`](paper/).
 
-1. **Proof** — machine-checked with the [Kani](https://github.com/model-checking/kani)
-   model checker: the AEAD + hash are provably free of panics, overflow, and UB for
-   all symbolic inputs, and decryption provably recovers the plaintext. See
-   `docs/verification.md`.
-2. **Source** — exhaustive differential correctness against the ASCON reference
-   (the `tests/kat.rs` known-answer vectors), including exact tag authentication.
-3. **Binary** — a control-flow census of the compiled `thumbv7em` image
-   (`analysis/ct_binary.py` over `rust-objdump`): per function, the conditional
-   branches / IT blocks / variable-latency ops that can carry data-dependent
-   timing. The safe-vs-leaky *differential* localizes secret-dependent branching
-   in the actual deployed artifact, across optimization levels.
-4. **Silicon** — a dudect-style timing-leakage test on the TM4C123 (Reparaz,
-   Balasch & Verbauwhede, DATE 2017): fixed-vs-random inputs, a Welch t-test over
-   on-chip **DWT cycle counts**, against a deliberately leaky positive control.
+## Why this is measurable without lab equipment
 
-The interesting result is where the three levels **agree or disagree** as the
-optimizer rewrites the code. Alongside this, RustGuard measures **what memory
-safety costs** — Rust vs the ASCON reference C and pqm4 assembly, same board, same
-toolchain.
+A Cortex-M4 has no data cache and no branch predictor, so the leak classes that
+dominate the literature — cache-line-granular table lookups, speculation — cannot
+manifest. What remains is secret-dependent branching, variable-latency
+instructions (`UDIV`/`SDIV`, 2–12 cycles), and early-return comparison. With
+interrupts masked, a cycle count becomes a *deterministic function of the input*:
+the same input always yields exactly the same number. That is what makes
+zero-spread and sub-cycle sensitivity claims possible here and not on a laptop.
 
-**Cross-silicon:** the harness is portable across Cortex-M4 parts (only UART init
-is board-specific; DWT is core-standard), so the finding can be shown not to be an
-artifact of one microarchitecture.
+## Two experiments, because one would overstate the result
 
-**Scope (honest limitations):** the silicon leg detects *timing* leakage, not
-*power/EM* (a ChipWhisperer-class rig, out of scope, is future work). The binary
-leg is a control-flow census + differential — a practical screen validated by its
-controls, **not** a sound taint-tracking proof (cf. BINSEC/Rel). The Kani proofs
-cover safety and decryption-recovery; full *tag-authentication* proofs are
-intractable for a laptop SAT solver and are covered instead by the exact KAT
-vectors. The contribution is the *four-level, reproducible-on-a-bare-board
-methodology* and what it reveals, not any single tool.
+| experiment | varies | measures |
+|---|---|---|
+| `verify` | the tag, key fixed | the crate's **comparison path** |
+| `keyed` | the key (classic dudect) | the crate's **arithmetic core** — AES key schedule and S-box, GHASH, Poly1305, the permutation, scalar multiplication |
 
-## What's verified today
+They are reported as separate matrices. A clean verdict on one says nothing
+about the other.
 
-- **Machine-checked (Kani).** 6/6 proofs verify: the permutation, encrypt,
-  decrypt, AD/padding, and hash are provably panic/overflow/UB-free for all
-  symbolic inputs, and decryption provably recovers the plaintext. Runs in CI.
-  See `docs/verification.md`.
-- **Correctness.** The AEAD matches the published ASCON-128 reference for 8
-  known-answer vectors (`rustguard-core/tests/kat.rs`). Real KATs, not round-trip
-  self-consistency checks.
-- **Memory safety.** `rustguard-core` and `rustguard-pap` are
-  `#![no_std] #![forbid(unsafe_code)]`. The only `unsafe` is isolated MMIO in the
-  firmware crate.
-- **Protocol robustness.** `rustguard-pap` uses a reboot-robust nonce
-  (epoch ‖ counter ‖ uid-hash) preventing nonce-reuse-on-reset. See
-  `docs/protocol_security.md`.
-- **Binary census.** `analysis/ct_binary.py` disassembles the compiled
-  `thumbv7em` crypto and reports that the variable-time decrypt carries extra
-  secret-dependent branches the constant-time one does not — the leak, localized
-  in the actual binary (runs in CI on every push).
-- **Pipeline.** `python analysis/selftest.py` runs the entire chain (perf, timing
-  t-test, binary census) on synthetic data and checks the controls separate as
-  they must. Works before any hardware arrives.
+## Controls, validated per configuration
+
+A null result means nothing without a control that demonstrably leaks — and a
+control validated once is not enough. The realistic control (an early-exit tag
+comparison) **stops leaking at `-O2`** when LLVM rewrites it branchless, so
+`CANARY-control` spends secret-dependent cycles behind `black_box`, which the
+compiler may not optimize through. `analysis/check_results.py` enforces in CI
+that **every** column has a control that leaks.
 
 ## Layout
 
-| Path | What |
+| path | what |
 |---|---|
-| `rustguard-core` | ASCON-128 AEAD + ASCON-HASH, `no_std`, verified KATs |
+| `probes` | the registry — every implementation under one interface |
+| `rustguard-core` | in-house ASCON-128, `no_std`, Kani-verified, KAT-checked |
 | `rustguard-pap` | reboot-robust packet authentication protocol |
-| `probes` | the primitive registry — every crate under evaluation behind one interface |
-| `firmware-tm4c` | perf benchmark (default) and multi-primitive timing harness (`--features timing`) |
-| `firmware-stm32-timing` | the same harness on a second vendor's M4 (STM32F303) |
-| `ct-probe` | thumbv7em staticlib exposing each primitive as a symbol for binary analysis |
-| `capture` | `collect_timing.py` — sweeps every primitive over UART |
-| `analysis` | `matrix` (leakage matrix), `dudect`, `ct_binary`, `opt_sweep`, `plot_perf`, `tables`, `make_figures`, `selftest` |
-| `docs` | verification, hardware setup, BOM, experiment runbook, status |
+| `firmware-tm4c` | TM4C123 harness: perf, timing, clock axis, ladder, public-key |
+| `firmware-stm32-timing` | the same harness on ST silicon (STM32F303) |
+| `pi-runner` | application-class harness (aarch64 Linux, Raspberry Pi 3/4/5) |
+| `capture` | `collect_timing.py` (boards), `import_pi.py` (Pi) |
+| `analysis` | `matrix`, `ladder`, `resolution`, `static_vs_measured`, `ct_binary`, `dudect`, `check_results` |
+| `paper` | the draft |
+| `results` | every raw capture, figure and table |
 
-`make_figures.py` produces **7 figures** (throughput, memory-safety overhead,
-permutation cost, timing histograms, t-statistic convergence, optimization-level
-sweep, binary control-flow census) and **5 tables** (cycle counts, timing summary,
-code size, opt sweep, binary census) as Markdown + LaTeX. `selftest.py` builds and
-checks all of them on synthetic, watermarked data so the pipeline is verifiable
-before any hardware arrives.
+## Reproducing it
 
-## Quick start (host, no hardware)
+Host only, no hardware:
 
 ```sh
-cargo test -p rustguard-core -p rustguard-pap   # correctness + protocol
+cargo test -p rustguard-core -p rustguard-pap   # KATs + protocol
 pip install -r analysis/requirements.txt
-python analysis/selftest.py                     # dry-run the full figure pipeline
+python -m pytest analysis/tests                 # 27 unit tests
+python analysis/selftest.py                     # whole pipeline on synthetic data
+python analysis/check_results.py                # invariants of the committed results
 ```
 
-Hardware experiments and the exact shopping list: `docs/hardware_bom.md` and
-`docs/experiment_runbook.md`. The repository deliberately ships **no** measured
-numbers — those are produced on the bench, by design.
+With a board (TM4C123 or STM32F3 Discovery):
 
-## Status
+```powershell
+scripts\sweep.ps1 -Port COM20 -Board tm4c       # build, flash, capture, build matrix
+python analysis\make_figures.py                 # 8 figures + 10 tables
+```
 
-Active research, scoped to hardware you can validate on a single Cortex-M4. See
-`docs/STATUS.md` for current state, what is verified, and what needs the bench.
+On a Raspberry Pi:
+
+```sh
+scripts/run_pi.sh 100000                        # then import_pi.py on the analysis host
+```
+
+See [`docs/experiment_runbook.md`](docs/experiment_runbook.md) for the full
+workflow and [`docs/hardware_setup.md`](docs/hardware_setup.md) for wiring.
+
+## Verification beyond measurement
+
+- **Machine-checked (Kani).** 6/6 proofs: the AEAD and hash are free of panics,
+  overflow and UB for all symbolic inputs, and decryption recovers the
+  plaintext. Runs in CI. See [`docs/verification.md`](docs/verification.md).
+- **Correctness.** Byte-for-byte against the published ASCON-128 reference for 8
+  known-answer vectors — real KATs, not round-trip self-consistency.
+- **Memory safety.** `rustguard-core` and `rustguard-pap` are `#![no_std]`
+  `#![forbid(unsafe_code)]`; the only `unsafe` is isolated MMIO in firmware.
+
+## Honest limitations
+
+- This measures **timing**, not power or EM. Constant-time code can still leak
+  through those channels; saying otherwise needs a capture rig.
+- Conclusions are stated for **in-order, cacheless Cortex-M4** cores. The leak
+  classes excluded by that architecture are exactly the ones that dominate on
+  application processors. The `pi-runner` harness extends the study there and is
+  pending hardware.
+- Zero spread is observed over the **sampled** input space — a strong empirical
+  statement, not a proof. It complements static verification rather than
+  replacing it.
+- The binary census is a **screening heuristic, not a detector**; the false
+  positive rate above is the point.
 
 ## License
 

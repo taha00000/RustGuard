@@ -48,9 +48,14 @@ def collect_cells(timing_dir: str):
             print(f"  skipping {os.path.basename(path)}: {e}")
             continue
         d = np.load(path)
-        board = str(d["board"]) if "board" in d else "board"
-        opt = str(d["opt"]) if "opt" in d else "O?"
-        primitive = str(d["probe"]) if "probe" in d else variant
+        # Only sweep captures belong in the matrix. Single-primitive captures
+        # from the deep-dive experiments carry no board/opt tags and would
+        # otherwise show up as phantom rows in a column of their own.
+        if not ("board" in d and "opt" in d and "probe" in d):
+            continue
+        board = str(d["board"])
+        opt = str(d["opt"])
+        primitive = str(d["probe"])
 
         t = welch_scalar(cyc[lab == 0], cyc[lab == 1])
         at = float(min(abs(t), 1e3)) if np.isfinite(t) else 1e3

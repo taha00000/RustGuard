@@ -192,6 +192,34 @@ mod p_rustguard_leaky {
     }
 }
 
+#[cfg(feature = "leaky-control")]
+mod p_canary {
+    //! Optimizer-proof positive control.
+    //!
+    //! The `p_rustguard_leaky` control is a *realistic* leak (an early-exit tag
+    //! comparison), and at -O2/-O3 LLVM rewrites it into branchless code, so it
+    //! stops leaking — a finding in its own right, but it leaves those columns
+    //! with no positive control. This control instead spends a number of cycles
+    //! taken directly from the tag, behind `black_box` so the compiler may not
+    //! reason about or remove it. It leaks by construction at every
+    //! optimization level, which is what makes a "no leakage detected" verdict
+    //! in the same column mean something.
+    use super::*;
+
+    pub fn correct(out: &mut [u8; MAX_TAG]) -> usize {
+        p_rustguard::correct(out)
+    }
+    pub fn verify(tag: &[u8]) -> bool {
+        let n = core::hint::black_box(tag[0]) as usize & 0x3F;
+        let mut acc = 0u32;
+        for i in 0..n {
+            acc = core::hint::black_box(acc.wrapping_add(i as u32));
+        }
+        core::hint::black_box(acc);
+        false // always rejects: no secret is revealed, only cycles are spent
+    }
+}
+
 macro_rules! entry {
     ($id:expr, $name:expr, $kind:expr, $len:expr, $m:ident) => {
         Probe {
@@ -217,6 +245,8 @@ pub static PROBES: &[Probe] = &[
     entry!(6, "ccm-aes128", Kind::Aead, 16, p_aesccm),
     entry!(7, "hmac-sha256", Kind::Mac, 32, p_hmac_sha256),
     entry!(8, "cmac-aes128", Kind::Mac, 16, p_cmac_aes),
+    #[cfg(feature = "leaky-control")]
+    entry!(98, "CANARY-control", Kind::Aead, 16, p_canary),
     #[cfg(feature = "leaky-control")]
     entry!(99, "rustguard-LEAKY-control", Kind::Aead, 16, p_rustguard_leaky),
 ];

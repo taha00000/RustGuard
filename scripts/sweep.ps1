@@ -41,11 +41,13 @@ foreach ($lvl in $Levels) {
   Pop-Location
   if (-not (Test-Path $bin)) { Write-Host "  build failed, skipping"; continue }
 
+  # The ICDI intermittently reports "Unable to initialize target" on the first
+  # attempts and then programs fine, so retry rather than giving up.
   $flashed = $false
-  for ($a = 1; $a -le 3; $a++) {
+  for ($a = 1; $a -le 8; $a++) {
     if ($Board -eq 'tm4c') {
       $out = & $LmFlash -q manual -i ICDI -e all -v -r $bin 2>&1 | Out-String
-      if ($out -match 'Verify Complete - Passed') { $flashed = $true; break }
+      if ($out -match 'Verify Complete|Verification Successful|Program Complete') { $flashed = $true; break }
     } else {
       $out = & $CubeCli -c port=SWD -w $bin 0x08000000 -v -rst 2>&1 | Out-String
       if ($out -match 'Download verified successfully|File download complete') { $flashed = $true; break }

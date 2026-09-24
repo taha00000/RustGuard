@@ -6,17 +6,20 @@
 //! and `analysis/dudect.py` drive it. Running the same experiment here shows the
 //! constant-time result is not an artifact of one microarchitecture.
 //!
-//! ## Protocol (one ASCII command, hex-encoded; reply on the same UART)
-//!   'e' <key><pt>       measure encrypt cycles              -> "cyc <n>"
-//!   'v' <key><tag>      measure decrypt cycles (tag check)  -> "cyc <n>"
-//!   'g' <key>           report the correct tag              -> "tag <hex>"
-//! Build:  default = constant-time DUT ; `--features leaky` = variable-time control.
+//! ## Protocol (same as firmware-tm4c; one ASCII line per reply)
+//!   'l'            list probes      -> "p <id> <taglen> <name>" ... "endp"
+//!   's' <id:2hex>  select a probe   -> "ok <taglen>" | "err"
+//!   'g'            correct tag      -> "tag <hex>"
+//!   'v' <tag hex>  time verify      -> "cyc <n>"
+//! Build:  default = all registry probes ; `--features leaky` adds the control.
 //!
-//! ## Wiring (the F3 Discovery's ST-LINK has no serial port, so use a dongle)
-//!   USART2 TX = PA2 -> dongle RX
-//!   USART2 RX = PA3 -> dongle TX
-//!   GND             -> dongle GND    (115200 8N1)
-//! Clock: internal HSI (8 MHz), so no external clock is needed to bring up UART.
+//! ## Serial: two routes, served simultaneously by the same image
+//!   USART1 PC4 (TX) / PC5 (RX) -> ST-LINK/V2-B virtual COM port on board
+//!                                 revisions that route it (no wiring at all);
+//!   USART2 PA2 (TX) / PA3 (RX) -> external USB-UART dongle
+//!                                 (PA2 -> dongle RX, PA3 -> dongle TX, GND-GND).
+//! Output goes to both; input is accepted from whichever receives it.
+//! 115200 8N1 on the internal HSI (8 MHz), so no external clock is needed.
 
 #![no_std]
 #![no_main]
@@ -41,56 +44,91 @@ mod board {
 
     // RM0316 register map.
     const RCC_AHBENR: u32 = 0x4002_1014; // GPIO port clocks
+    const RCC_APB2ENR: u32 = 0x4002_1018; // USART1 clock
     const RCC_APB1ENR: u32 = 0x4002_101C; // USART2 clock
     const RCC_AHBENR_IOPAEN: u32 = 1 << 17;
+    const RCC_AHBENR_IOPCEN: u32 = 1 << 19;
+    const RCC_APB2ENR_USART1EN: u32 = 1 << 14;
     const RCC_APB1ENR_USART2EN: u32 = 1 << 17;
 
-    const GPIOA_MODER: u32 = 0x4800_0000;
-    const GPIOA_AFRL: u32 = 0x4800_0020;
+    const GPIOA: u32 = 0x4800_0000;
+    const GPIOC: u32 = 0x4800_0800;
+    const MODER: u32 = 0x00;
+    const PUPDR: u32 = 0x0C;
+    const AFRL: u32 = 0x20;
 
-    const USART2_BRR: u32 = 0x4000_440C;
-    const USART2_CR1: u32 = 0x4000_4400;
-    const USART_ISR: u32 = 0x4000_441C;
-    const USART_RDR: u32 = 0x4000_4424;
-    const USART_TDR: u32 = 0x4000_4428;
-    const USART_ISR_RXNE: u32 = 1 << 5;
-    const USART_ISR_TXE: u32 = 1 << 7;
-    const USART_CR1_UE: u32 = 1 << 0;
-    const USART_CR1_RE: u32 = 1 << 2;
-    const USART_CR1_TE: u32 = 1 << 3;
+    const USART1: u32 = 0x4001_3800;
+    const USART2: u32 = 0x4000_4400;
+    const CR1: u32 = 0x00;
+    const BRR: u32 = 0x0C;
+    const ISR: u32 = 0x1C;
+    const ICR: u32 = 0x20;
+    const RDR: u32 = 0x24;
+    const TDR: u32 = 0x28;
+    const ISR_ERR: u32 = 0b1111; // PE | FE | NE | ORE
+    const ISR_RXNE: u32 = 1 << 5;
+    const ISR_TXE: u32 = 1 << 7;
+    const CR1_UE: u32 = 1 << 0;
+    const CR1_RE: u32 = 1 << 2;
+    const CR1_TE: u32 = 1 << 3;
 
-    // HSI = 8 MHz after reset; PCLK1 = 8 MHz (prescalers /1). 115200 8N1.
+    // HSI = 8 MHz after reset; PCLK1 = PCLK2 = 8 MHz (prescalers /1). 115200 8N1.
     const CLOCK_HZ: u32 = 8_000_000;
     const BAUD: u32 = 115_200;
 
+    const PORTS: [u32; 2] = [USART1, USART2];
+
+    /// Next byte from whichever USART has one. Framing/noise/overrun errors are
+    /// cleared and the byte dropped, so an unconnected route cannot inject junk.
     pub fn getc() -> u8 {
-        while rd(USART_ISR) & USART_ISR_RXNE == 0 {}
-        rd(USART_RDR) as u8
+        loop {
+            for &u in PORTS.iter() {
+                let isr = rd(u + ISR);
+                if isr & ISR_ERR != 0 {
+                    wr(u + ICR, ISR_ERR);
+                    let _ = rd(u + RDR);
+                    continue;
+                }
+                if isr & ISR_RXNE != 0 {
+                    return rd(u + RDR) as u8;
+                }
+            }
+        }
     }
     pub fn putc(b: u8) {
-        while rd(USART_ISR) & USART_ISR_TXE == 0 {}
-        wr(USART_TDR, b as u32);
+        for &u in PORTS.iter() {
+            while rd(u + ISR) & ISR_TXE == 0 {}
+            wr(u + TDR, b as u32);
+        }
     }
 
-    /// Bring up GPIOA + USART2 on PA2 (TX) / PA3 (RX), AF7, 115200 8N1, on HSI.
+    /// Put two pins of `port` into AF7 with a pull-up on the RX pin.
+    fn af7(port: u32, tx: u32, rx: u32) {
+        let mut m = rd(port + MODER);
+        m &= !((0b11 << (2 * tx)) | (0b11 << (2 * rx)));
+        m |= (0b10 << (2 * tx)) | (0b10 << (2 * rx));
+        wr(port + MODER, m);
+        let mut p = rd(port + PUPDR);
+        p &= !(0b11 << (2 * rx));
+        p |= 0b01 << (2 * rx); // idle-high when nothing is attached
+        wr(port + PUPDR, p);
+        let mut a = rd(port + AFRL);
+        a &= !((0xF << (4 * tx)) | (0xF << (4 * rx)));
+        a |= (7 << (4 * tx)) | (7 << (4 * rx));
+        wr(port + AFRL, a);
+    }
+
+    /// USART1 on PC4/PC5 (ST-LINK VCP route) and USART2 on PA2/PA3 (dongle route).
     pub fn uart_init() {
-        wr(RCC_AHBENR, rd(RCC_AHBENR) | RCC_AHBENR_IOPAEN);
+        wr(RCC_AHBENR, rd(RCC_AHBENR) | RCC_AHBENR_IOPAEN | RCC_AHBENR_IOPCEN);
+        wr(RCC_APB2ENR, rd(RCC_APB2ENR) | RCC_APB2ENR_USART1EN);
         wr(RCC_APB1ENR, rd(RCC_APB1ENR) | RCC_APB1ENR_USART2EN);
-
-        // PA2, PA3 -> alternate function (0b10).
-        let mut moder = rd(GPIOA_MODER);
-        moder &= !((0b11 << 4) | (0b11 << 6));
-        moder |= (0b10 << 4) | (0b10 << 6);
-        wr(GPIOA_MODER, moder);
-
-        // PA2, PA3 -> AF7 (USART2).
-        let mut afrl = rd(GPIOA_AFRL);
-        afrl &= !((0xF << 8) | (0xF << 12));
-        afrl |= (7 << 8) | (7 << 12);
-        wr(GPIOA_AFRL, afrl);
-
-        wr(USART2_BRR, CLOCK_HZ / BAUD); // integer oversampling-by-16 divisor
-        wr(USART2_CR1, USART_CR1_UE | USART_CR1_TE | USART_CR1_RE);
+        af7(GPIOC, 4, 5);
+        af7(GPIOA, 2, 3);
+        for &u in PORTS.iter() {
+            wr(u + BRR, CLOCK_HZ / BAUD); // integer oversampling-by-16 divisor
+            wr(u + CR1, CR1_UE | CR1_TE | CR1_RE);
+        }
     }
 }
 

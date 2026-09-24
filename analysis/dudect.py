@@ -56,6 +56,40 @@ def welch_scalar(fixed: np.ndarray, rand: np.ndarray) -> float:
     return (mf - mr) / denom
 
 
+# Crop points from the original dudect: on a noisy platform the upper tail is
+# dominated by preemption, interrupts and cache/TLB misses unrelated to the
+# secret, which inflate variance and mask a real difference in the bulk of the
+# distribution. Cropping at a percentile and keeping the strongest result is
+# what dudect does; it is unnecessary on a microcontroller, where the counts are
+# deterministic, and essential on an application core.
+CROP_PERCENTILES = (100, 99.9, 99, 95, 90, 80, 70, 60, 50)
+
+
+def welch_cropped(fixed: np.ndarray, rand: np.ndarray, percentiles=CROP_PERCENTILES):
+    """-> (max |t| over crop levels, percentile that produced it).
+
+    Each level discards samples above that percentile of the pooled data, then
+    runs the ordinary Welch test on what remains.
+    """
+    pooled = np.concatenate([fixed, rand])
+    best_t, best_p = 0.0, 100.0
+    for p in percentiles:
+        cut = np.percentile(pooled, p)
+        f, r = fixed[fixed <= cut], rand[rand <= cut]
+        if len(f) < 32 or len(r) < 32:
+            continue
+        t = welch_scalar(f, r)
+        if np.isfinite(t) and abs(t) > abs(best_t):
+            best_t, best_p = t, p
+    return best_t, best_p
+
+
+def is_noisy(path) -> bool:
+    """True for captures from an OS-scheduled core, where timings are not exact."""
+    d = np.load(path)
+    return "noisy" in d and str(d["noisy"]) in ("1", "True", "true")
+
+
 def load(path):
     d = np.load(path)
     cyc = d["cycles"].astype(np.float64)

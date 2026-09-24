@@ -2,21 +2,22 @@
   \centering
   \caption{Timing-leakage assessment per primitive, board and optimization level for the keyed experiment (dudect; |t| > 4.5 indicates leakage).}
   \label{tab:leakagematrixkeyed}
-  \begin{tabular}{llllll}
+  \begin{tabular}{lllllllllllll}
     \toprule
-    primitive & stm32/O0 & stm32/O1 & stm32/O2 & stm32/O3 & verdict \\
+    primitive & stm32/O0 & stm32/O1 & stm32/O2 & stm32/O3 & stm32@32MHz/O3 & stm32@64MHz/O3 & tm4c/O0 & tm4c/O1 & tm4c/O2 & tm4c/O3 & tm4c@80MHz/O3 & verdict \\
     \midrule
-    rustguard-LEAKY-control & - & 0.00 & 0.00 & 0.00 & constant-time \\
-    rustguard-ascon128 & 0.00 & 0.00 & 0.00 & 0.00 & constant-time \\
-    CANARY-control & - & 61.57 & 61.63 & 61.63 & LEAKS \\
-    aes-gcm & 0.00 & 0.00 & 0.00 & 0.00 & constant-time \\
-    aes-gcm-siv & - & 0.00 & 0.00 & 0.00 & constant-time \\
-    ascon-aead & 0.00 & 0.00 & 0.00 & 0.00 & constant-time \\
-    ccm-aes128 & - & 0.00 & 0.00 & 0.00 & constant-time \\
-    chacha20poly1305 & 0.00 & 0.00 & 0.00 & 0.00 & constant-time \\
-    cmac-aes128 & - & 0.00 & 0.00 & 0.00 & constant-time \\
-    eax-aes128 & - & 0.00 & 0.00 & 0.00 & constant-time \\
-    hmac-sha256 & - & 0.00 & 0.00 & 0.00 & constant-time \\
+    rustguard-ascon128 & 0.00 & 0.00 & 0.00 & 0.00 & 0.00 & 0.00 & 0.00 & 0.00 & 0.00 & 0.00 & 0.00 & constant-time \\
+    CANARY-control & 61.62 & 61.57 & 61.63 & 61.63 & 61.65 & 61.60 & 61.62 & 61.57 & 61.63 & 61.63 & 61.64 & LEAKS \\
+    aes-gcm & 0.00 & 0.00 & 0.00 & 0.00 & 0.00 & 0.00 & 0.00 & 0.00 & 0.00 & 0.00 & 0.00 & constant-time \\
+    aes-gcm-siv & 0.00 & 0.00 & 0.00 & 0.00 & 0.00 & 0.00 & 0.00 & 0.00 & 0.00 & 0.00 & 0.00 & constant-time \\
+    ascon-aead & 0.00 & 0.00 & 0.00 & 0.00 & 0.00 & 0.00 & 0.00 & 0.00 & 0.00 & 0.00 & 0.00 & constant-time \\
+    ccm-aes128 & 0.00 & 0.00 & 0.00 & 0.00 & 0.00 & 0.00 & 0.00 & 0.00 & 0.00 & 0.00 & 0.00 & constant-time \\
+    chacha20poly1305 & 0.00 & 0.00 & 0.00 & 0.00 & 0.00 & 0.00 & 0.00 & 0.00 & 0.00 & 0.00 & 0.00 & constant-time \\
+    cmac-aes128 & 0.00 & 0.00 & 0.00 & 0.00 & 0.00 & 0.00 & 0.00 & 0.00 & 0.00 & 0.00 & 0.00 & constant-time \\
+    eax-aes128 & 0.00 & 0.00 & 0.00 & 0.00 & 0.00 & 0.00 & 0.00 & 0.00 & 0.00 & 0.00 & 0.00 & constant-time \\
+    hmac-sha256 & 0.00 & 0.00 & 0.00 & 0.00 & 0.00 & 0.00 & 0.00 & 0.00 & 0.00 & 0.00 & 0.00 & constant-time \\
+    p256-scalarmul & - & - & - & - & - & - & - & 0.00 & 0.00 & 0.00 & - & constant-time \\
+    x25519-dalek & - & - & - & - & - & - & - & 0.00 & 0.00 & 0.00 & - & constant-time \\
     \bottomrule
   \end{tabular}
 \end{table}

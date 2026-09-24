@@ -8,6 +8,14 @@ default = []
 # Adds RustGuard's deliberately variable-time decrypt as probe id 99 — the
 # positive control proving the harness detects a real leak on this hardware.
 leaky-control = ["rustguard-core/tvla-leaky-control"]
+# Adds calibrated leaks of known size (ids 90-96) for measuring how small a leak
+# each platform can actually detect. Off by default so the ecosystem sweep's
+# probe set is unaffected.
+ladder = []
+# Adds public-key primitives (ids 20-21). Scalar multiplication is where real
+# timing bugs live — branchy big-integer arithmetic and modular inversion,
+# rather than the branch-free block ciphers.
+pubkey = ["dep:curve25519-dalek", "dep:p256"]
 
 [dependencies]
 rustguard-core = { path = "../rustguard-core" }
@@ -27,3 +35,5 @@ ghash = { version = "0.5", default-features = false }
 hmac = { version = "0.12", default-features = false }
 sha2 = { version = "0.10", default-features = false }
 cmac = { version = "0.7", default-features = false }
+curve25519-dalek = { version = "4", default-features = false, optional = true }
+p256 = { version = "0.13", default-features = false, features = ["arithmetic"], optional = true }

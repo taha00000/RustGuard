@@ -35,6 +35,9 @@ pub const MAX_TAG: usize = 32;
 pub enum Kind {
     Aead,
     Mac,
+    /// Public-key: the secret is a scalar, and the timed operation is the
+    /// crate's own scalar multiplication.
+    Pk,
 }
 
 /// Largest key any probe takes (ChaCha20Poly1305 = 32).
@@ -267,6 +270,130 @@ mod p_canary {
     }
 }
 
+// ── calibrated leak ladder ───────────────────────────────────────────────────
+// Controls that answer "how small a leak can this platform see?". Each spends a
+// known number of extra loop iterations when the secret's first bit is set, so
+// the leak's magnitude is known by construction and grows by powers of two. The
+// smallest rung a platform still flags is that platform's detection floor —
+// one cycle on a microcontroller with a deterministic counter, far coarser on an
+// OS-scheduled application core. Without this, "no leakage detected" has no
+// scale attached to it.
+#[cfg(feature = "ladder")]
+macro_rules! ladder_probe {
+    ($m:ident, $iters:expr) => {
+        mod $m {
+            use super::*;
+            fn spend(secret_byte: u8) -> u8 {
+                let extra = if core::hint::black_box(secret_byte) & 1 == 1 {
+                    $iters
+                } else {
+                    0
+                };
+                let mut acc = 0u32;
+                for i in 0..extra {
+                    acc = core::hint::black_box(acc.wrapping_add(i as u32));
+                }
+                core::hint::black_box(acc as u8)
+            }
+            pub fn correct(out: &mut [u8; MAX_TAG]) -> usize {
+                p_rustguard::correct(out)
+            }
+            pub fn verify(tag: &[u8]) -> bool {
+                let _ = spend(tag[0]);
+                false
+            }
+            pub fn encrypt_keyed(key: &[u8]) -> u8 {
+                spend(key[0])
+            }
+        }
+    };
+}
+
+#[cfg(feature = "ladder")]
+ladder_probe!(p_ladder1, 1u32);
+#[cfg(feature = "ladder")]
+ladder_probe!(p_ladder2, 2u32);
+#[cfg(feature = "ladder")]
+ladder_probe!(p_ladder4, 4u32);
+#[cfg(feature = "ladder")]
+ladder_probe!(p_ladder8, 8u32);
+#[cfg(feature = "ladder")]
+ladder_probe!(p_ladder16, 16u32);
+#[cfg(feature = "ladder")]
+ladder_probe!(p_ladder64, 64u32);
+#[cfg(feature = "ladder")]
+ladder_probe!(p_ladder256, 256u32);
+
+// ── public-key probes ────────────────────────────────────────────────────────
+// Block ciphers and MACs are the easy case: they are branch-free by
+// construction, which is why they measure clean. Scalar multiplication is where
+// timing bugs actually occur, so the secret here is the scalar itself and the
+// timed operation is the crate's own variable-base/fixed-base multiplication.
+#[cfg(feature = "pubkey")]
+mod p_x25519 {
+    use super::*;
+    use curve25519_dalek::montgomery::MontgomeryPoint;
+
+    pub fn correct(out: &mut [u8; MAX_TAG]) -> usize {
+        let mut s = [0u8; 32];
+        s.copy_from_slice(&[0x42u8; 32]);
+        out[..32].copy_from_slice(&MontgomeryPoint::mul_base_clamped(s).to_bytes());
+        32
+    }
+    pub fn verify(tag: &[u8]) -> bool {
+        // x25519 has no verification API of its own, so this derives the public
+        // key and compares. The comparison must use `subtle`: a plain `==` on
+        // slices is an early-exit memcmp, which would leak and be measured as
+        // though the crate leaked, when the artefact is this probe's own code.
+        use subtle::ConstantTimeEq;
+        let mut s = [0u8; 32];
+        s.copy_from_slice(&[0x42u8; 32]);
+        let pk = MontgomeryPoint::mul_base_clamped(s).to_bytes();
+        bool::from(pk[..].ct_eq(&tag[..32.min(tag.len())]))
+    }
+    pub fn encrypt_keyed(key: &[u8]) -> u8 {
+        let mut s = [0u8; 32];
+        s.copy_from_slice(&key[..32]);
+        core::hint::black_box(MontgomeryPoint::mul_base_clamped(s).to_bytes()[0])
+    }
+}
+
+#[cfg(feature = "pubkey")]
+mod p_p256 {
+    use super::*;
+    use p256::elliptic_curve::ops::Reduce;
+    use p256::elliptic_curve::sec1::ToEncodedPoint;
+    use p256::{ProjectivePoint, Scalar, U256};
+
+    fn scalar_from(bytes: &[u8]) -> Scalar {
+        let mut b = [0u8; 32];
+        b.copy_from_slice(&bytes[..32]);
+        // Reduce rather than reject: a uniformly random 32-byte string is not
+        // always a valid scalar, and rejection would make the timing depend on
+        // the retry count rather than on the crate.
+        Scalar::reduce(U256::from_be_slice(&b))
+    }
+
+    pub fn correct(out: &mut [u8; MAX_TAG]) -> usize {
+        let p = ProjectivePoint::GENERATOR * scalar_from(&[0x42u8; 32]);
+        let enc = p.to_affine().to_encoded_point(true);
+        let b = enc.as_bytes();
+        let n = core::cmp::min(b.len(), MAX_TAG);
+        out[..n].copy_from_slice(&b[..n]);
+        n
+    }
+    pub fn verify(tag: &[u8]) -> bool {
+        use subtle::ConstantTimeEq;
+        let mut buf = [0u8; MAX_TAG];
+        let n = correct(&mut buf);
+        bool::from(buf[..n].ct_eq(&tag[..n.min(tag.len())]))
+    }
+    pub fn encrypt_keyed(key: &[u8]) -> u8 {
+        let p = ProjectivePoint::GENERATOR * scalar_from(key);
+        core::hint::black_box(p.to_affine().to_encoded_point(true).as_bytes()[1])
+    }
+}
+
 macro_rules! entry {
     ($id:expr, $name:expr, $kind:expr, $len:expr, $klen:expr, $m:ident) => {
         Probe {
@@ -294,6 +421,24 @@ pub static PROBES: &[Probe] = &[
     entry!(6, "ccm-aes128", Kind::Aead, 16, 16, p_aesccm),
     entry!(7, "hmac-sha256", Kind::Mac, 32, 32, p_hmac_sha256),
     entry!(8, "cmac-aes128", Kind::Mac, 16, 16, p_cmac_aes),
+    #[cfg(feature = "pubkey")]
+    entry!(20, "x25519-dalek", Kind::Pk, 32, 32, p_x25519),
+    #[cfg(feature = "pubkey")]
+    entry!(21, "p256-scalarmul", Kind::Pk, 32, 32, p_p256),
+    #[cfg(feature = "ladder")]
+    entry!(90, "LADDER-1", Kind::Aead, 16, 16, p_ladder1),
+    #[cfg(feature = "ladder")]
+    entry!(91, "LADDER-2", Kind::Aead, 16, 16, p_ladder2),
+    #[cfg(feature = "ladder")]
+    entry!(92, "LADDER-4", Kind::Aead, 16, 16, p_ladder4),
+    #[cfg(feature = "ladder")]
+    entry!(93, "LADDER-8", Kind::Aead, 16, 16, p_ladder8),
+    #[cfg(feature = "ladder")]
+    entry!(94, "LADDER-16", Kind::Aead, 16, 16, p_ladder16),
+    #[cfg(feature = "ladder")]
+    entry!(95, "LADDER-64", Kind::Aead, 16, 16, p_ladder64),
+    #[cfg(feature = "ladder")]
+    entry!(96, "LADDER-256", Kind::Aead, 16, 16, p_ladder256),
     #[cfg(feature = "leaky-control")]
     entry!(98, "CANARY-control", Kind::Aead, 16, 16, p_canary),
     #[cfg(feature = "leaky-control")]
@@ -303,4 +448,6 @@ pub static PROBES: &[Probe] = &[
 pub fn find(id: u8) -> Option<&'static Probe> {
     PROBES.iter().find(|p| p.id == id)
 }
+
+
 

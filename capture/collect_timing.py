@@ -46,11 +46,17 @@ def _readline(ser) -> str:
     return ser.readline().decode("ascii", "replace").strip()
 
 
-def _wait_ready(ser, tries: int = 60) -> None:
+def _wait_ready(ser, tries: int = 6) -> None:
+    """Catch the boot banner if it is still coming.
+
+    The board prints READY once at reset. When the port is opened after that —
+    the normal case, since flashing resets the board before we connect — the
+    banner is long gone and every read times out, so keep the budget small: the
+    protocol is request/response and needs no handshake to work.
+    """
     for _ in range(tries):
         if _readline(ser).endswith("READY"):
             return
-    print("warning: no READY banner; continuing anyway", file=sys.stderr)
 
 
 def list_probes(ser):

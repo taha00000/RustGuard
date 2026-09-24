@@ -22,6 +22,10 @@ leaky = ["probes/leaky-control", "rustguard-core/tvla-leaky-control"]
 # Clock axis: run at the part's maximum 80 MHz via the PLL instead of the 16 MHz
 # reset default, which puts flash wait states into the instruction path.
 clk80 = []
+# Calibrated leaks of known size, for measuring this platform's detection floor.
+ladder = ["probes/ladder"]
+# Public-key primitives (scalar multiplication), where real timing bugs live.
+pubkey = ["probes/pubkey"]
 
 [profile.release]
 opt-level = 3

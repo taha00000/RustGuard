@@ -1,11 +1,11 @@
-#!/usr/bin/env python3
+﻿#!/usr/bin/env python3
 """Ecosystem leakage matrix: every primitive x board x optimization level.
 
 The headline artifact of the systematic study. Reads all timing captures
 produced by capture/collect_timing.py, computes the dudect t-statistic for each
 (primitive, board, optimization level) cell, and emits:
 
-  * a heatmap figure  — green = no timing leakage detected, red = LEAKS
+  * a heatmap figure  â€” green = no timing leakage detected, red = LEAKS
   * a table (Markdown + LaTeX) with the exact |t| values
 
 Cells are read straight from the capture filenames written by the collector
@@ -33,7 +33,7 @@ try:
 except ImportError:
     plt = None
 
-from dudect import THRESHOLD, load, welch_scalar
+from dudect import THRESHOLD, load, welch_cropped, welch_scalar
 from figutil import ensure_parent, watermark, write_table
 
 
@@ -41,7 +41,7 @@ def collect_cells(timing_dir: str, experiment: str = "verify"):
     """-> {primitive: {column: (abs_t, leaks)}}, ordered column list.
 
     `experiment` selects which measurement to tabulate: "verify" (fixed key,
-    varying tag — the comparison path) or "keyed" (fixed vs random key — the
+    varying tag â€” the comparison path) or "keyed" (fixed vs random key â€” the
     primitive's own core). They are separate matrices because they test
     different code and a clean verdict in one says nothing about the other.
     """
@@ -65,14 +65,20 @@ def collect_cells(timing_dir: str, experiment: str = "verify"):
         opt = str(d["opt"])
         primitive = str(d["probe"])
         # The realistic leaky control's leak lives in the tag comparison, which
-        # the keyed experiment never runs — its encrypt path is the same code as
+        # the keyed experiment never runs â€” its encrypt path is the same code as
         # the constant-time probe, and measures bit-identically. Reporting it as
         # a control there would imply a validation it does not provide, so the
         # keyed columns are validated by CANARY-control alone.
         if experiment == "keyed" and primitive == "rustguard-LEAKY-control":
             continue
 
-        t = welch_scalar(cyc[lab == 0], cyc[lab == 1])
+        # Deterministic counters (microcontrollers) get the plain test; noisy
+        # application cores get dudect's percentile cropping, without which OS
+        # preemption in the tail hides a real difference in the bulk.
+        if "noisy" in d and str(d["noisy"]) in ("1", "True", "true"):
+            t, _pct = welch_cropped(cyc[lab == 0], cyc[lab == 1])
+        else:
+            t = welch_scalar(cyc[lab == 0], cyc[lab == 1])
         at = float(min(abs(t), 1e3)) if np.isfinite(t) else 1e3
         clock = str(d["clock"]) if "clock" in d else "default"
         col = f"{board}/{opt}" if clock == "default" else f"{board}@{clock}/{opt}"
@@ -92,7 +98,7 @@ def make_matrix(timing_dir, fig_path=None, table_path=None, watermark_text=None,
                 experiment="verify"):
     cells, columns = collect_cells(timing_dir, experiment)
     if not cells:
-        print("[matrix] no timing captures found — run capture/collect_timing.py first")
+        print("[matrix] no timing captures found â€” run capture/collect_timing.py first")
         return None
 
     # Controls first, then alphabetical, so the validated pair reads at the top.
@@ -101,7 +107,7 @@ def make_matrix(timing_dir, fig_path=None, table_path=None, watermark_text=None,
 
     primitives = sorted(cells, key=sort_key)
 
-    # ── table ────────────────────────────────────────────────────────────────
+    # â”€â”€ table â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
     if table_path:
         headers = ["primitive"] + columns + ["verdict"]
         rows = []
@@ -128,7 +134,7 @@ def make_matrix(timing_dir, fig_path=None, table_path=None, watermark_text=None,
         )
         print(f"table -> {table_path}")
 
-    # ── heatmap ──────────────────────────────────────────────────────────────
+    # â”€â”€ heatmap â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
     if fig_path and plt is not None:
         grid = np.full((len(primitives), len(columns)), np.nan)
         for i, p in enumerate(primitives):
@@ -152,7 +158,7 @@ def make_matrix(timing_dir, fig_path=None, table_path=None, watermark_text=None,
         ax.set_yticklabels(primitives, fontsize=9)
         title_what = ("verification path (fixed key, varying tag)" if experiment == "verify"
                       else "primitive core (fixed vs random key)")
-        ax.set_title(f"Timing-leakage matrix — {title_what}\n"
+        ax.set_title(f"Timing-leakage matrix â€” {title_what}\n"
                      f"dudect |t|; red = leaks, threshold {THRESHOLD}", fontsize=10)
         watermark(fig, watermark_text)
         fig.tight_layout()
@@ -186,3 +192,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+

@@ -22,6 +22,10 @@ leaky = ["probes/leaky-control"]
 # and brings the prefetch buffer into play.
 clk32 = []
 clk64 = []
+# Calibrated leaks of known size, for measuring this platform's detection floor.
+ladder = ["probes/ladder"]
+# Public-key primitives (scalar multiplication), where real timing bugs live.
+pubkey = ["probes/pubkey"]
 
 [profile.release]
 opt-level = 3

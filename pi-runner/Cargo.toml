@@ -1,0 +1,26 @@
+[package]
+name = "pi-runner"
+version = "0.1.0"
+edition = "2021"
+
+# The application-class counterpart to the microcontroller firmware: runs the
+# same `probes` registry on Linux (Raspberry Pi 3/4/5 — Cortex-A53/A72/A76) so
+# the identical Rust sources are measured across the microarchitectural
+# complexity spectrum, from in-order cacheless M4s to out-of-order superscalar
+# cores with caches and branch prediction.
+
+[dependencies]
+probes = { path = "../probes" }
+libc = "0.2"
+
+[features]
+default = []
+# Includes the deliberately variable-time control and the calibrated canary
+# ladder, exactly as on the boards.
+leaky = ["probes/leaky-control"]
+
+[profile.release]
+opt-level = 3
+lto = true
+codegen-units = 1
+debug = true
